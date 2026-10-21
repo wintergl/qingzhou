@@ -1,0 +1,580 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		100000000000000000000001 /* SplitVpnIphoneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000001 /* SplitVpnIphoneApp.swift */; };
+		100000000000000000000002 /* RootTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000002 /* RootTabView.swift */; };
+		100000000000000000000003 /* SplitVpnAppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000003 /* SplitVpnAppState.swift */; };
+		100000000000000000000004 /* SubscriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000004 /* SubscriptionService.swift */; };
+		100000000000000000000005 /* SplitVpnVPNManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000005 /* SplitVpnVPNManager.swift */; };
+		100000000000000000000006 /* ConnectScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000006 /* ConnectScreen.swift */; };
+		100000000000000000000007 /* SubscriptionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000007 /* SubscriptionScreen.swift */; };
+		100000000000000000000008 /* NodesScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000008 /* NodesScreen.swift */; };
+		100000000000000000000009 /* RulesScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000009 /* RulesScreen.swift */; };
+		10000000000000000000000A /* MoreScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000A /* MoreScreen.swift */; };
+		10000000000000000000000B /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000B /* Assets.xcassets */; };
+		10000000000000000000000C /* vpn-domains.json in Resources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000C /* vpn-domains.json */; };
+		10000000000000000000000D /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000D /* PacketTunnelProvider.swift */; };
+		10000000000000000000000E /* TunnelDataPlane.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000E /* TunnelDataPlane.swift */; };
+		10000000000000000000000F /* SplitVpnPacketTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 20000000000000000000000F /* SplitVpnPacketTunnel.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		100000000000000000000010 /* SplitVpnModels.swift in App Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* SplitVpnModels.swift */; };
+		100000000000000000000011 /* DefaultRules.swift in App Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* DefaultRules.swift */; };
+		100000000000000000000012 /* Redaction.swift in App Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* Redaction.swift */; };
+		100000000000000000000013 /* AppGroupStore.swift in App Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* AppGroupStore.swift */; };
+		100000000000000000000016 /* SplitVpnModels.swift in Extension Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000010 /* SplitVpnModels.swift */; };
+		100000000000000000000017 /* DefaultRules.swift in Extension Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000011 /* DefaultRules.swift */; };
+		100000000000000000000018 /* Redaction.swift in Extension Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000012 /* Redaction.swift */; };
+		100000000000000000000019 /* AppGroupStore.swift in Extension Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000013 /* AppGroupStore.swift */; };
+		10000000000000000000001C /* LibboxPacketTunnelCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001B /* LibboxPacketTunnelCore.swift */; };
+		10000000000000000000001D /* Libbox.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001C /* Libbox.xcframework */; };
+		10000000000000000000001F /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001D /* UIKit.framework */; };
+		100000000000000000000020 /* libresolv.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001E /* libresolv.tbd */; };
+		100000000000000000000021 /* ConnectivityProbeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000020 /* ConnectivityProbeService.swift */; };
+		100000000000000000000022 /* geoip-cn.srs in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000021 /* geoip-cn.srs */; };
+		100000000000000000000023 /* geosite-cn.srs in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000022 /* geosite-cn.srs */; };
+		100000000000000000000024 /* geosite-geolocation-!cn.srs in Resources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000023 /* geosite-geolocation-!cn.srs */; };
+		100000000000000000000025 /* RuleSetUpdateService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000024 /* RuleSetUpdateService.swift */; };
+		100000000000000000000026 /* CoreClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000025 /* CoreClient.swift */; };
+		100000000000000000000028 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* Theme.swift */; };
+		100000000000000000000027 /* SplitVpnCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* SplitVpnCore.xcframework */; };
+		100000000000000000000031 /* TunnelRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000031 /* TunnelRecoveryPolicy.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		300000000000000000000001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 400000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 500000000000000000000002;
+			remoteInfo = SplitVpnPacketTunnel;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		600000000000000000000001 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				10000000000000000000000F /* SplitVpnPacketTunnel.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		200000000000000000000001 /* SplitVpnIphoneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitVpnIphoneApp.swift; sourceTree = "<group>"; };
+		200000000000000000000002 /* RootTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootTabView.swift; sourceTree = "<group>"; };
+		200000000000000000000003 /* SplitVpnAppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitVpnAppState.swift; sourceTree = "<group>"; };
+		200000000000000000000004 /* SubscriptionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubscriptionService.swift; sourceTree = "<group>"; };
+		200000000000000000000005 /* SplitVpnVPNManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitVpnVPNManager.swift; sourceTree = "<group>"; };
+		200000000000000000000006 /* ConnectScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectScreen.swift; sourceTree = "<group>"; };
+		200000000000000000000007 /* SubscriptionScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubscriptionScreen.swift; sourceTree = "<group>"; };
+		200000000000000000000008 /* NodesScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodesScreen.swift; sourceTree = "<group>"; };
+		200000000000000000000009 /* RulesScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RulesScreen.swift; sourceTree = "<group>"; };
+		20000000000000000000000A /* MoreScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreScreen.swift; sourceTree = "<group>"; };
+		20000000000000000000000B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		20000000000000000000000C /* vpn-domains.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "vpn-domains.json"; sourceTree = "<group>"; };
+		20000000000000000000000D /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
+		20000000000000000000000E /* TunnelDataPlane.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelDataPlane.swift; sourceTree = "<group>"; };
+		20000000000000000000000F /* SplitVpnPacketTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = SplitVpnPacketTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000010 /* SplitVpnModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitVpnModels.swift; sourceTree = "<group>"; };
+		200000000000000000000011 /* DefaultRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DefaultRules.swift; sourceTree = "<group>"; };
+		200000000000000000000012 /* Redaction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Redaction.swift; sourceTree = "<group>"; };
+		200000000000000000000013 /* AppGroupStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroupStore.swift; sourceTree = "<group>"; };
+		200000000000000000000016 /* split-vpn.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "split-vpn.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		200000000000000000000017 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		200000000000000000000018 /* SplitVpnIphone.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SplitVpnIphone.entitlements; sourceTree = "<group>"; };
+		200000000000000000000019 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		20000000000000000000001A /* SplitVpnPacketTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SplitVpnPacketTunnel.entitlements; sourceTree = "<group>"; };
+		20000000000000000000001B /* LibboxPacketTunnelCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibboxPacketTunnelCore.swift; sourceTree = "<group>"; };
+		20000000000000000000001C /* Libbox.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ThirdParty/SingBoxFrameworks/Libbox.xcframework; sourceTree = "<group>"; };
+		20000000000000000000001D /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
+		20000000000000000000001E /* libresolv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.tbd; path = usr/lib/libresolv.tbd; sourceTree = SDKROOT; };
+		20000000000000000000001F /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
+		200000000000000000000020 /* ConnectivityProbeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectivityProbeService.swift; sourceTree = "<group>"; };
+		200000000000000000000021 /* geoip-cn.srs */ = {isa = PBXFileReference; lastKnownFileType = file; path = "geodata/geoip-cn.srs"; sourceTree = "<group>"; };
+		200000000000000000000022 /* geosite-cn.srs */ = {isa = PBXFileReference; lastKnownFileType = file; path = "geodata/geosite-cn.srs"; sourceTree = "<group>"; };
+		200000000000000000000023 /* geosite-geolocation-!cn.srs */ = {isa = PBXFileReference; lastKnownFileType = file; path = "geodata/geosite-geolocation-!cn.srs"; sourceTree = "<group>"; };
+		200000000000000000000024 /* RuleSetUpdateService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleSetUpdateService.swift; sourceTree = "<group>"; };
+		200000000000000000000025 /* CoreClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreClient.swift; sourceTree = "<group>"; };
+		200000000000000000000027 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		200000000000000000000026 /* SplitVpnCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ThirdParty/CoreFrameworks/SplitVpnCore.xcframework; sourceTree = "<group>"; };
+		200000000000000000000031 /* TunnelRecoveryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelRecoveryPolicy.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		700000000000000000000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000027 /* SplitVpnCore.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		700000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				10000000000000000000001D /* Libbox.xcframework in Frameworks */,
+				10000000000000000000001F /* UIKit.framework in Frameworks */,
+				100000000000000000000020 /* libresolv.tbd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		800000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				800000000000000000000003 /* App */,
+				800000000000000000000006 /* PacketTunnel */,
+				800000000000000000000007 /* Shared */,
+				800000000000000000000008 /* Resources */,
+				80000000000000000000000A /* Config */,
+				20000000000000000000001C /* Libbox.xcframework */,
+				200000000000000000000026 /* SplitVpnCore.xcframework */,
+				20000000000000000000001D /* UIKit.framework */,
+				20000000000000000000001E /* libresolv.tbd */,
+				800000000000000000000002 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		800000000000000000000002 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000016 /* split-vpn.app */,
+				20000000000000000000000F /* SplitVpnPacketTunnel.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		800000000000000000000003 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000017 /* Info.plist */,
+				200000000000000000000018 /* SplitVpnIphone.entitlements */,
+				200000000000000000000001 /* SplitVpnIphoneApp.swift */,
+				200000000000000000000002 /* RootTabView.swift */,
+				200000000000000000000027 /* Theme.swift */,
+				800000000000000000000004 /* Screens */,
+				800000000000000000000005 /* Services */,
+				20000000000000000000000B /* Assets.xcassets */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		800000000000000000000004 /* Screens */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000006 /* ConnectScreen.swift */,
+				200000000000000000000007 /* SubscriptionScreen.swift */,
+				200000000000000000000008 /* NodesScreen.swift */,
+				200000000000000000000009 /* RulesScreen.swift */,
+				20000000000000000000000A /* MoreScreen.swift */,
+			);
+			path = Screens;
+			sourceTree = "<group>";
+		};
+		800000000000000000000005 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000003 /* SplitVpnAppState.swift */,
+				200000000000000000000004 /* SubscriptionService.swift */,
+				200000000000000000000025 /* CoreClient.swift */,
+					200000000000000000000005 /* SplitVpnVPNManager.swift */,
+					200000000000000000000020 /* ConnectivityProbeService.swift */,
+					200000000000000000000024 /* RuleSetUpdateService.swift */,
+				);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		800000000000000000000006 /* PacketTunnel */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000019 /* Info.plist */,
+				20000000000000000000001A /* SplitVpnPacketTunnel.entitlements */,
+				20000000000000000000000D /* PacketTunnelProvider.swift */,
+				20000000000000000000000E /* TunnelDataPlane.swift */,
+				20000000000000000000001B /* LibboxPacketTunnelCore.swift */,
+			);
+			path = PacketTunnel;
+			sourceTree = "<group>";
+		};
+		800000000000000000000007 /* Shared */ = {
+			isa = PBXGroup;
+			children = (
+				200000000000000000000010 /* SplitVpnModels.swift */,
+				200000000000000000000031 /* TunnelRecoveryPolicy.swift */,
+				200000000000000000000011 /* DefaultRules.swift */,
+				200000000000000000000012 /* Redaction.swift */,
+				200000000000000000000013 /* AppGroupStore.swift */,
+			);
+			path = Shared;
+			sourceTree = "<group>";
+		};
+		800000000000000000000008 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+					800000000000000000000009 /* defaults */,
+					200000000000000000000021 /* geoip-cn.srs */,
+					200000000000000000000022 /* geosite-cn.srs */,
+					200000000000000000000023 /* geosite-geolocation-!cn.srs */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		80000000000000000000000A /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				20000000000000000000001F /* Signing.xcconfig */,
+			);
+			path = Config;
+			sourceTree = "<group>";
+		};
+		800000000000000000000009 /* defaults */ = {
+			isa = PBXGroup;
+			children = (
+				20000000000000000000000C /* vpn-domains.json */,
+			);
+			path = defaults;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		500000000000000000000001 /* SplitVpnIphone */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 900000000000000000000002 /* Build configuration list for PBXNativeTarget "SplitVpnIphone" */;
+			buildPhases = (
+				A00000000000000000000001 /* Sources */,
+				700000000000000000000001 /* Frameworks */,
+				A00000000000000000000002 /* Resources */,
+				600000000000000000000001 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B00000000000000000000001 /* PBXTargetDependency */,
+			);
+			name = SplitVpnIphone;
+			productName = SplitVpnIphone;
+			productReference = 200000000000000000000016 /* split-vpn.app */;
+			productType = "com.apple.product-type.application";
+		};
+		500000000000000000000002 /* SplitVpnPacketTunnel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 900000000000000000000003 /* Build configuration list for PBXNativeTarget "SplitVpnPacketTunnel" */;
+			buildPhases = (
+				A00000000000000000000003 /* Sources */,
+				700000000000000000000002 /* Frameworks */,
+				A00000000000000000000004 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SplitVpnPacketTunnel;
+			productName = SplitVpnPacketTunnel;
+			productReference = 20000000000000000000000F /* SplitVpnPacketTunnel.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		400000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1530;
+				LastUpgradeCheck = 1530;
+				TargetAttributes = {
+					500000000000000000000001 = {
+						CreatedOnToolsVersion = 15.3;
+					};
+					500000000000000000000002 = {
+						CreatedOnToolsVersion = 15.3;
+					};
+				};
+			};
+			buildConfigurationList = 900000000000000000000001 /* Build configuration list for PBXProject "SplitVpn" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 800000000000000000000001;
+			productRefGroup = 800000000000000000000002 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				500000000000000000000001 /* SplitVpnIphone */,
+				500000000000000000000002 /* SplitVpnPacketTunnel */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A00000000000000000000002 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				10000000000000000000000B /* Assets.xcassets in Resources */,
+					10000000000000000000000C /* vpn-domains.json in Resources */,
+					100000000000000000000022 /* geoip-cn.srs in Resources */,
+					100000000000000000000023 /* geosite-cn.srs in Resources */,
+					100000000000000000000024 /* geosite-geolocation-!cn.srs in Resources */,
+				);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000004 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A00000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				100000000000000000000001 /* SplitVpnIphoneApp.swift in Sources */,
+				100000000000000000000002 /* RootTabView.swift in Sources */,
+				100000000000000000000003 /* SplitVpnAppState.swift in Sources */,
+				100000000000000000000004 /* SubscriptionService.swift in Sources */,
+				100000000000000000000026 /* CoreClient.swift in Sources */,
+				100000000000000000000028 /* Theme.swift in Sources */,
+					100000000000000000000005 /* SplitVpnVPNManager.swift in Sources */,
+					100000000000000000000021 /* ConnectivityProbeService.swift in Sources */,
+					100000000000000000000025 /* RuleSetUpdateService.swift in Sources */,
+					100000000000000000000006 /* ConnectScreen.swift in Sources */,
+				100000000000000000000007 /* SubscriptionScreen.swift in Sources */,
+				100000000000000000000008 /* NodesScreen.swift in Sources */,
+				100000000000000000000009 /* RulesScreen.swift in Sources */,
+				10000000000000000000000A /* MoreScreen.swift in Sources */,
+				100000000000000000000010 /* SplitVpnModels.swift in App Sources */,
+				100000000000000000000011 /* DefaultRules.swift in App Sources */,
+				100000000000000000000012 /* Redaction.swift in App Sources */,
+				100000000000000000000013 /* AppGroupStore.swift in App Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A00000000000000000000003 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				10000000000000000000000D /* PacketTunnelProvider.swift in Sources */,
+				10000000000000000000000E /* TunnelDataPlane.swift in Sources */,
+				10000000000000000000001C /* LibboxPacketTunnelCore.swift in Sources */,
+				100000000000000000000016 /* SplitVpnModels.swift in Extension Sources */,
+				100000000000000000000031 /* TunnelRecoveryPolicy.swift in Sources */,
+				100000000000000000000017 /* DefaultRules.swift in Extension Sources */,
+				100000000000000000000018 /* Redaction.swift in Extension Sources */,
+				100000000000000000000019 /* AppGroupStore.swift in Extension Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B00000000000000000000001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 500000000000000000000002 /* SplitVpnPacketTunnel */;
+			targetProxy = 300000000000000000000001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		C00000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		C00000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		C00000000000000000000003 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 20000000000000000000001F /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/SplitVpnIphone.entitlements;
+				CURRENT_PROJECT_VERSION = 8;
+				DEVELOPMENT_TEAM = "$(SPLITVPN_DEVELOPMENT_TEAM)";
+				ENABLE_DEBUG_DYLIB = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 0.6.5;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_APP_BUNDLE_ID)";
+				PRODUCT_NAME = "split-vpn";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		C00000000000000000000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 20000000000000000000001F /* Signing.xcconfig */;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/SplitVpnIphone.entitlements;
+				CURRENT_PROJECT_VERSION = 8;
+				DEVELOPMENT_TEAM = "$(SPLITVPN_DEVELOPMENT_TEAM)";
+				ENABLE_DEBUG_DYLIB = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				MARKETING_VERSION = 0.6.5;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_APP_BUNDLE_ID)";
+				PRODUCT_NAME = "split-vpn";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		C00000000000000000000005 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 20000000000000000000001F /* Signing.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = PacketTunnel/SplitVpnPacketTunnel.entitlements;
+				CURRENT_PROJECT_VERSION = 8;
+				DEVELOPMENT_TEAM = "$(SPLITVPN_DEVELOPMENT_TEAM)";
+				ENABLE_DEBUG_DYLIB = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PacketTunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				MARKETING_VERSION = 0.6.5;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_PACKET_TUNNEL_BUNDLE_ID)";
+				PRODUCT_NAME = SplitVpnPacketTunnel;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Debug;
+		};
+		C00000000000000000000006 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 20000000000000000000001F /* Signing.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = PacketTunnel/SplitVpnPacketTunnel.entitlements;
+				CURRENT_PROJECT_VERSION = 8;
+				DEVELOPMENT_TEAM = "$(SPLITVPN_DEVELOPMENT_TEAM)";
+				ENABLE_DEBUG_DYLIB = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PacketTunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				MARKETING_VERSION = 0.6.5;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_PACKET_TUNNEL_BUNDLE_ID)";
+				PRODUCT_NAME = SplitVpnPacketTunnel;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		900000000000000000000001 /* Build configuration list for PBXProject "SplitVpn" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000001 /* Debug */,
+				C00000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		900000000000000000000002 /* Build configuration list for PBXNativeTarget "SplitVpnIphone" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000003 /* Debug */,
+				C00000000000000000000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		900000000000000000000003 /* Build configuration list for PBXNativeTarget "SplitVpnPacketTunnel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C00000000000000000000005 /* Debug */,
+				C00000000000000000000006 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 400000000000000000000001 /* Project object */;
+}

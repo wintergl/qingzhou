@@ -1,0 +1,9 @@
+// Phone-test signing defaults for split-vpn iPhone.
+// Copy Signing.local.example.xcconfig to Signing.local.xcconfig for personal values.
+
+SPLITVPN_DEVELOPMENT_TEAM =
+SPLITVPN_APP_BUNDLE_ID = dev.splitvpn.iphone
+SPLITVPN_PACKET_TUNNEL_BUNDLE_ID = dev.splitvpn.iphone.PacketTunnel
+SPLITVPN_APP_GROUP = group.dev.splitvpn.iphone
+
+#include? "Signing.local.xcconfig"

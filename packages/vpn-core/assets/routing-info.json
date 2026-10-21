@@ -1,0 +1,60 @@
+{
+  "geositeRule": "GEOSITE,geolocation-!cn,VPN",
+  "geositePolicy": "VPN",
+  "geositeDataName": "GeoSite.dat",
+  "geoAutoUpdate": true,
+  "geoUpdateIntervalHours": 72,
+  "geoxUrls": {
+    "geoip": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
+    "geosite": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+    "mmdb": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
+  },
+  "quicRejectRule": "微信优先直连、失败时经 VPN 兜底；其他 UDP/443 按节点能力走 VPN 或 REJECT",
+  "ruleOrder": [
+    {
+      "label": "局域网",
+      "rule": "GEOIP,lan / GEOSITE,private / 100.64.0.0/10",
+      "policy": "DIRECT"
+    },
+    {
+      "label": "微信",
+      "rule": "PROCESS-NAME,WeChat,WECHAT / PROCESS-NAME,WeChatAppEx,WECHAT / PROCESS-NAME,WeChatAppEx Helper,WECHAT",
+      "policy": "DIRECT -> VPN"
+    },
+    {
+      "label": "国内域名",
+      "rule": "GEOSITE,cn,DIRECT",
+      "policy": "DIRECT"
+    },
+    {
+      "label": "国内 IP",
+      "rule": "GEOIP,CN,DIRECT",
+      "policy": "DIRECT"
+    },
+    {
+      "label": "其他 QUIC",
+      "rule": "AND,((NETWORK,UDP),(DST-PORT,443)),VPN / AND,((NETWORK,UDP),(DST-PORT,443)),REJECT",
+      "policy": "VPN / REJECT"
+    },
+    {
+      "label": "VPN 列表",
+      "rule": "RULE-SET,vpn-domains,VPN",
+      "policy": "VPN"
+    },
+    {
+      "label": "内置国外",
+      "rule": "GEOSITE,geolocation-!cn,VPN",
+      "policy": "VPN"
+    },
+    {
+      "label": "国外 IP",
+      "rule": "GEOIP,!CN,VPN",
+      "policy": "VPN"
+    },
+    {
+      "label": "兜底",
+      "rule": "MATCH,<未知流量策略>",
+      "policy": "DIRECT / VPN"
+    }
+  ]
+}

@@ -1,0 +1,273 @@
+{
+  "badges" : "Generic vector punctuation",
+  "files" : [
+    {
+      "badge" : "none",
+      "companyConnected" : false,
+      "file" : "light-off-off-none.ico",
+      "personalConnected" : false,
+      "sha256" : "e09cd4699aa8b784143e06154a4c55c09370dc5e76cd935e56f7119d6fa9fb1f",
+      "theme" : "light"
+    },
+    {
+      "badge" : "progress",
+      "companyConnected" : false,
+      "file" : "light-off-off-progress.ico",
+      "personalConnected" : false,
+      "sha256" : "5c18a9ceb1977ae19e69416684dadd587440180f4585a4cee49a00dd556fd5b7",
+      "theme" : "light"
+    },
+    {
+      "badge" : "error",
+      "companyConnected" : false,
+      "file" : "light-off-off-error.ico",
+      "personalConnected" : false,
+      "sha256" : "e6d39489c1dc5bb4b839906f6c9a6bff281b05ee4e31795bc1ca50d217c17aee",
+      "theme" : "light"
+    },
+    {
+      "badge" : "unknown",
+      "companyConnected" : false,
+      "file" : "light-off-off-unknown.ico",
+      "personalConnected" : false,
+      "sha256" : "6445e69466e4c9f50fac921b3ce8f44942fa7f84d1ecdbff67c1c31d4714cf20",
+      "theme" : "light"
+    },
+    {
+      "badge" : "none",
+      "companyConnected" : true,
+      "file" : "light-off-on-none.ico",
+      "personalConnected" : false,
+      "sha256" : "07ef7f8b32e1d13145633513d017dcc14f57e3c9e5fe6f136b3f5e0678e07b04",
+      "theme" : "light"
+    },
+    {
+      "badge" : "progress",
+      "companyConnected" : true,
+      "file" : "light-off-on-progress.ico",
+      "personalConnected" : false,
+      "sha256" : "7249d044e5221d45b2a515d40467e0762d0804a4316c7523de3be55f1854782b",
+      "theme" : "light"
+    },
+    {
+      "badge" : "error",
+      "companyConnected" : true,
+      "file" : "light-off-on-error.ico",
+      "personalConnected" : false,
+      "sha256" : "79e4d04c824a446a6b0100b4dbfc170269a0e99efbb3edf4808961a9ef078ed2",
+      "theme" : "light"
+    },
+    {
+      "badge" : "unknown",
+      "companyConnected" : true,
+      "file" : "light-off-on-unknown.ico",
+      "personalConnected" : false,
+      "sha256" : "797aad77cb2aa6568ba8517d4a29c708119c11d405d5072a396db4e430860665",
+      "theme" : "light"
+    },
+    {
+      "badge" : "none",
+      "companyConnected" : false,
+      "file" : "light-on-off-none.ico",
+      "personalConnected" : true,
+      "sha256" : "dbbd02c4e8f644072ac03c855a9999fd3bafe9de201d9e382ca2006138b835fd",
+      "theme" : "light"
+    },
+    {
+      "badge" : "progress",
+      "companyConnected" : false,
+      "file" : "light-on-off-progress.ico",
+      "personalConnected" : true,
+      "sha256" : "d899e3a616d17f59dd755e6e03a4196ce139d61c8de13d3db93fedcd136c4734",
+      "theme" : "light"
+    },
+    {
+      "badge" : "error",
+      "companyConnected" : false,
+      "file" : "light-on-off-error.ico",
+      "personalConnected" : true,
+      "sha256" : "c7c23ce5b1dfe43e5817af9f088e325601cbeb650bad71747686617bc57b604b",
+      "theme" : "light"
+    },
+    {
+      "badge" : "unknown",
+      "companyConnected" : false,
+      "file" : "light-on-off-unknown.ico",
+      "personalConnected" : true,
+      "sha256" : "358ebef02bdc75d8f8ea3df2d91980ebd92ef33c2aaebf4545b75b28689242f4",
+      "theme" : "light"
+    },
+    {
+      "badge" : "none",
+      "companyConnected" : true,
+      "file" : "light-on-on-none.ico",
+      "personalConnected" : true,
+      "sha256" : "e13d18e3f2dda1f01ae5b095029940e5867e19cb2b529eefc23ec31e31ae8a46",
+      "theme" : "light"
+    },
+    {
+      "badge" : "progress",
+      "companyConnected" : true,
+      "file" : "light-on-on-progress.ico",
+      "personalConnected" : true,
+      "sha256" : "a490f13129d5d274d19d5f85df0a220ce25f144172a0a5fbca10ec0d22b88a7c",
+      "theme" : "light"
+    },
+    {
+      "badge" : "error",
+      "companyConnected" : true,
+      "file" : "light-on-on-error.ico",
+      "personalConnected" : true,
+      "sha256" : "b99b302ea17a6052e389d391fe566553e096095f96f35f8bf102f9ef7f5f28b0",
+      "theme" : "light"
+    },
+    {
+      "badge" : "unknown",
+      "companyConnected" : true,
+      "file" : "light-on-on-unknown.ico",
+      "personalConnected" : true,
+      "sha256" : "bcd342504772640df34ceccb8c283cadd229a95b5c236cded5ad75a7870c2669",
+      "theme" : "light"
+    },
+    {
+      "badge" : "none",
+      "companyConnected" : false,
+      "file" : "dark-off-off-none.ico",
+      "personalConnected" : false,
+      "sha256" : "0323a4fb23d8163e578f841992a2b6646c04e42aa6a2f861dc61ed416db205ab",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "progress",
+      "companyConnected" : false,
+      "file" : "dark-off-off-progress.ico",
+      "personalConnected" : false,
+      "sha256" : "953ba97ade5078e6b7ea2f1526c40641b6c4df84b1fc1b858b367deeb18ef6c7",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "error",
+      "companyConnected" : false,
+      "file" : "dark-off-off-error.ico",
+      "personalConnected" : false,
+      "sha256" : "f301666dabc7da1e25dcf6aafc3c710d318a95878784f1313f70835ef477f132",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "unknown",
+      "companyConnected" : false,
+      "file" : "dark-off-off-unknown.ico",
+      "personalConnected" : false,
+      "sha256" : "f259f9194b9029b7f55fa6da1eaca2fa78099bd2d1f74c81fb8e5610102a55db",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "none",
+      "companyConnected" : true,
+      "file" : "dark-off-on-none.ico",
+      "personalConnected" : false,
+      "sha256" : "667f5737153e3a52f5d961cf37405089dc49c5a49ef7bef74d5f25ebdade9a15",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "progress",
+      "companyConnected" : true,
+      "file" : "dark-off-on-progress.ico",
+      "personalConnected" : false,
+      "sha256" : "276a0e58944b8c479632becbadd9afadf1691fd24cf7bad8316dba88263ffda4",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "error",
+      "companyConnected" : true,
+      "file" : "dark-off-on-error.ico",
+      "personalConnected" : false,
+      "sha256" : "85e011bd2ea7e63f50abfe21cf26fb34ee211220d5ed670fe0f75f2cce85ef73",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "unknown",
+      "companyConnected" : true,
+      "file" : "dark-off-on-unknown.ico",
+      "personalConnected" : false,
+      "sha256" : "dbbf044ece429502c84065e7878be0a28a8e982bdcd52a6108afc70c908aecf5",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "none",
+      "companyConnected" : false,
+      "file" : "dark-on-off-none.ico",
+      "personalConnected" : true,
+      "sha256" : "e340c6c0c2722e9c9a931553e94747cfe679b8f4681a472409edaa23da31706e",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "progress",
+      "companyConnected" : false,
+      "file" : "dark-on-off-progress.ico",
+      "personalConnected" : true,
+      "sha256" : "58076c0924af94f411da6f0405098cfffd3327ef036245bf7c852ff7c086f929",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "error",
+      "companyConnected" : false,
+      "file" : "dark-on-off-error.ico",
+      "personalConnected" : true,
+      "sha256" : "49e3fc81a3fd2b82f7227119888b6a505870490d3944fa4cc205531b1baefa7d",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "unknown",
+      "companyConnected" : false,
+      "file" : "dark-on-off-unknown.ico",
+      "personalConnected" : true,
+      "sha256" : "71dd128bc565e8700cd40f5f256043c4df49fe80e2f6f46c6fc307f25704cae8",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "none",
+      "companyConnected" : true,
+      "file" : "dark-on-on-none.ico",
+      "personalConnected" : true,
+      "sha256" : "19672586f9f23cc9933a0a415c316c245e71056e20c7cb015ea9270caea22842",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "progress",
+      "companyConnected" : true,
+      "file" : "dark-on-on-progress.ico",
+      "personalConnected" : true,
+      "sha256" : "6f0250ee1955e267b715375fea9ba4396f50f614802f7191008d923a1f2b24ed",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "error",
+      "companyConnected" : true,
+      "file" : "dark-on-on-error.ico",
+      "personalConnected" : true,
+      "sha256" : "c9baba9652de4bdb8bddd029f033a5a4b3f05591cd334a91e425ee1455f38011",
+      "theme" : "dark"
+    },
+    {
+      "badge" : "unknown",
+      "companyConnected" : true,
+      "file" : "dark-on-on-unknown.ico",
+      "personalConnected" : true,
+      "sha256" : "c43fce3b30f25d7f6092b8372d770e3c0f454ca487d2f4d2c169b6efe21d024b",
+      "theme" : "dark"
+    }
+  ],
+  "rendererSha256" : "16622b8774d43e2d056a8c1d8eb330dd9eebb11730f47552c435ad6027fe0f59",
+  "sizes" : [
+    16,
+    20,
+    24,
+    32,
+    40,
+    48,
+    64,
+    128
+  ],
+  "source" : "StatusBarController.icon(for:appearance:)"
+}

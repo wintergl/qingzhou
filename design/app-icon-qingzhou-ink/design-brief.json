@@ -1,0 +1,15 @@
+{
+  "app_name": "轻舟",
+  "created_date": "2026-10-09",
+  "inspiration": {
+    "verse": "轻舟已过万重山",
+    "author": "李白",
+    "poem": "早发白帝城"
+  },
+  "design_interpretation": "水墨远山表现阻隔，留白水路表现连接，一叶轻舟表现穿行的自在。",
+  "style": "水墨画、宣纸底、墨色远山、留白水路、白帆小舟、一抹朱红。",
+  "generation_mode": "built-in image_gen",
+  "source_asset": "qingzhou.png",
+  "platform_asset": "qingzhou.icns",
+  "prompt": "Use case: style-transfer\nAsset type: final macOS app icon for the app now named 轻舟 (Qingzhou).\nInput image: the supplied jade-green boat-and-mountains icon is a concept reference and edit target. Preserve its poetic premise — \"轻舟已过万重山\", a small light boat passing through layers of mountains along a clear water passage — but fully transform the artwork into authentic Chinese ink-and-wash painting.\nPrimary request: an elegant restrained shuimo 水墨画 application icon, beautifully hand-painted, quietly poetic, memorable and easy to recognize in the Dock.\nStyle: traditional Chinese brush and diluted black ink on warm ivory xuan paper, modern spare composition. Soft ink diffusion at mountain edges, deliberate dry-brush variation, subtle paper grain. True flat brush painting, no 3D surfaces or digital sculpting. Mostly black, charcoal, pale grey and paper-white. Only one tiny cinnabar-red accent on the boat.\nComposition: keep exactly one front-facing rounded-square app tile, centered on the square canvas with modest actual transparent padding. Within the tile, simplify the landscape strongly: two or three large asymmetrical misty mountain shapes, strong dark ink along one foreground bank fading into pale distant ridges; broad unpainted paper creates a continuous winding river through the mountains. Leave the upper third spacious and misty. Place one clearly legible little traditional boat in the lower central area, with a confident curved dark-ink hull and one spare sail drawn in ivory negative space with dark ink edges. The boat occupies roughly 30 percent of tile width; its single triangular sail and hull remain clear at small app-icon sizes. A small cinnabar stroke at the sail or hull provides a restrained focal accent, no ornamental seal.\nThe emotional tone is tranquil freedom, a clear passage through mountains, lightness and effortless movement. The icon should feel like one small treasured brush painting, not a tourist poster.\nBackground: the rounded-square tile is opaque warm ivory paper. Outside that single smoothly bounded tile is genuine alpha transparency. Perfectly clean exterior silhouette, no stray paper flecks or brush marks outside the tile.\nText: none. Do not write 轻舟, the poem, calligraphy, signatures, labels or any characters into the icon. The application name will be set in the app metadata.\nConstraints: one isolated icon only. No green jade palette, no blue gradients, no gold metal, no glossy plastic, no bas-relief, no embossed border, no shields, no padlocks, no technical letter logos, no decorative seals, no people, no buildings, no tiny trees, no sun disc, no elaborate boat rigging, no collage, no device mockup, no perspective tilt, no watermark."
+}

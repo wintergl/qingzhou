@@ -1,0 +1,172 @@
+{
+  "mixed-port": 7890,
+  "allow-lan": false,
+  "mode": "rule",
+  "log-level": "error",
+  "ipv6": false,
+  "geodata-mode": false,
+  "geo-auto-update": true,
+  "geo-update-interval": 72,
+  "geox-url": {
+    "geoip": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb",
+    "geosite": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
+    "mmdb": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
+  },
+  "external-controller": "127.0.0.1:9090",
+  "secret": "",
+  "external-controller-cors": {
+    "allow-origins": ["http://127.0.0.1"],
+    "allow-private-network": false
+  },
+  "profile": {
+    "store-selected": true,
+    "store-fake-ip": true
+  },
+  "sniffer": {
+    "enable": true,
+    "force-dns-mapping": true,
+    "parse-pure-ip": true,
+    "override-destination": false,
+    "sniff": {
+      "HTTP": {
+        "ports": [
+          80,
+          8080,
+          "8082-8880"
+        ],
+        "override-destination": true
+      },
+      "TLS": {
+        "ports": [
+          443,
+          8443
+        ]
+      },
+      "QUIC": {
+        "ports": [
+          443,
+          8443
+        ]
+      }
+    },
+    "skip-domain": [
+      "+.lan",
+      "+.local"
+    ]
+  },
+  "tun": {
+    "enable": true,
+    "stack": "system",
+    "auto-route": true,
+    "auto-detect-interface": true,
+    "strict-route": true,
+    "dns-hijack": [
+      "any:53",
+      "tcp://any:53"
+    ],
+    "route-exclude-address": [
+      "127.0.0.0/8",
+      "10.0.0.0/8",
+      "172.16.0.0/12",
+      "192.168.0.0/16",
+      "100.64.0.0/10",
+      "169.254.0.0/16",
+      "224.0.0.0/4"
+    ]
+  },
+  "dns": {
+    "enable": true,
+    "listen": "127.0.0.1:53",
+    "ipv6": false,
+    "enhanced-mode": "fake-ip",
+    "fake-ip-range": "198.18.0.1/16",
+    "respect-rules": true,
+    "default-nameserver": [
+      "1.1.1.1",
+      "8.8.8.8",
+      "223.5.5.5",
+      "119.29.29.29"
+    ],
+    "nameserver": [
+      "https://dns.google/dns-query",
+      "https://cloudflare-dns.com/dns-query"
+    ],
+    "proxy-server-nameserver": [
+      "https://dns.alidns.com/dns-query",
+      "https://doh.pub/dns-query"
+    ],
+    "nameserver-policy": {
+      "geosite:cn": [
+        "https://dns.alidns.com/dns-query",
+        "https://doh.pub/dns-query"
+      ]
+    }
+  },
+  "rule-providers": {
+    "vpn-domains": {
+      "type": "file",
+      "behavior": "classical",
+      "path": "./providers/vpn-domains.yaml"
+    }
+  },
+  "proxy-providers": {},
+  "proxies": [],
+  "proxy-groups": [
+    {
+      "name": "VPN",
+      "type": "select",
+      "default-selected": "AUTO",
+      "use": [],
+      "proxies": [
+        "AUTO",
+        "BALANCE",
+        "DIRECT"
+      ]
+    },
+    {
+      "name": "WECHAT",
+      "type": "fallback",
+      "proxies": [
+        "DIRECT",
+        "VPN"
+      ],
+      "url": "http://extshort.weixin.qq.com/",
+      "interval": 30,
+      "timeout": 5000,
+      "lazy": false
+    },
+    {
+      "name": "BALANCE",
+      "type": "load-balance",
+      "use": [],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": 300,
+      "strategy": "round-robin",
+      "lazy": false
+    },
+    {
+      "name": "AUTO",
+      "type": "url-test",
+      "use": [],
+      "url": "https://www.gstatic.com/generate_204",
+      "interval": 300,
+      "tolerance": 50,
+      "lazy": false
+    }
+  ],
+  "rules": [
+    "GEOIP,lan,DIRECT,no-resolve",
+    "GEOSITE,private,DIRECT",
+    "IP-CIDR,100.64.0.0/10,DIRECT,no-resolve",
+    "PROCESS-NAME,WeChat,WECHAT",
+    "PROCESS-NAME,WeChatAppEx,WECHAT",
+    "PROCESS-NAME,WeChatAppEx Helper,WECHAT",
+    "GEOSITE,cn,DIRECT",
+    "GEOIP,CN,DIRECT",
+    "AND,((NETWORK,UDP),(DST-PORT,443)),REJECT",
+    "RULE-SET,vpn-domains,VPN",
+    "GEOSITE,geolocation-!cn,VPN",
+    "GEOIP,!CN,VPN",
+    "MATCH,DIRECT"
+  ]
+}

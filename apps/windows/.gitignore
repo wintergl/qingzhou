@@ -1,0 +1,6 @@
+dist/
+release/
+src-tauri/target/
+src-tauri/gen/
+Qingzhou/bin/
+Qingzhou/obj/

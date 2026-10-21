@@ -1,0 +1,7 @@
+// Local phone-test values. Copy this file to Signing.local.xcconfig.
+// Signing.local.xcconfig is ignored by git.
+
+SPLITVPN_DEVELOPMENT_TEAM = YOURTEAMID
+SPLITVPN_APP_BUNDLE_ID = com.example.splitvpn
+SPLITVPN_PACKET_TUNNEL_BUNDLE_ID = com.example.splitvpn.PacketTunnel
+SPLITVPN_APP_GROUP = group.com.example.splitvpn

@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../../Qingzhou/CoreClient.cs" Link="CoreClient.cs" />
+    <Compile Include="../../Qingzhou/Company.cs" Link="Company.cs" />
+    <Compile Include="../../Qingzhou/CompanyPasswordChangeInput.cs" Link="CompanyPasswordChangeInput.cs" />
+    <Compile Include="../../Qingzhou/RuntimeEnvironment.cs" Link="RuntimeEnvironment.cs" />
+    <Compile Include="../../Qingzhou/Json.cs" Link="Json.cs" />
+    <Compile Include="../CompanyAuthentication/PlatformStubs.cs" Link="PlatformStubs.cs" />
+  </ItemGroup>
+  <!-- Only the Windows job API is stubbed on macOS. Readers are unmodified. -->
+  <Target Name="BuildJobStub" AfterTargets="Build" Condition="$([MSBuild]::IsOSPlatform('OSX'))">
+    <Exec Command="cc -dynamiclib -Wall -Werror &quot;$(MSBuildProjectDirectory)/job_stub.c&quot; -o &quot;$(TargetDir)libreader-job-stub.dylib&quot;" />
+  </Target>
+</Project>

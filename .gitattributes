@@ -1,0 +1,9 @@
+*.dat binary
+*.metadb binary
+*.mmdb binary
+*.srs binary
+*.so binary
+*.exe binary
+*.icns binary
+*.png binary
+resources/mihomo/**/mihomo binary

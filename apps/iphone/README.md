@@ -2,7 +2,7 @@
 
 SwiftUI 主 App + Network Extension Packet Tunnel。主 App 通过共享 Rust 核心生成 sing-box 配置，Packet Tunnel 使用本地 Libbox 框架转发设备流量。构建和配置检查与真机联网分别验收。
 
-当前版本 0.6.1，主 App 与扩展构建号均为 8。
+版本号以 Xcode 工程的 `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` 为准。
 
 本文件说明 iPhone 框架准备、签名、数据面与设备验收。
 
@@ -22,22 +22,62 @@ Xcode scheme 为 `SplitVpnIphone`；扩展 target 为 `SplitVpnPacketTunnel`。�
 
 订阅下载由 `URLSession` 完成，Rust 使用 `subscription:plan` / `subscription:accept` 解析与存储。核心数据在 `<App Group>/core/`，界面和隧道读取 `AppGroupStore` 镜像与 `generated/sing-box.json`。Rust 框架只链接主 App，扩展接收生成的配置。
 
-## 本地框架
+## 从干净源码准备框架
 
-| 暂存路径 | 用途与构建入口 |
+需要 macOS、完整 Xcode（不能仅安装 Command Line Tools）、Rust stable / Cargo、Go 1.26.4、Git 和 Python 3。iOS 最低版本为 17.0。首次构建会从公开 GitHub 和 Go module proxy 下载依赖；不需要本项目维护者的缓存、Apple 账号或预制框架。
+
+以下命令均在仓库根目录运行：
+
+```sh
+xcodebuild -version
+xcrun --sdk iphoneos --show-sdk-path
+xcrun --sdk iphonesimulator --show-sdk-path
+rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+apps/iphone/Scripts/build-core-xcframework.sh
+apps/iphone/Scripts/build-sing-box-libbox.sh
+```
+
+若 `xcrun` 找不到 SDK，在 Xcode 的 Settings → Locations 中选择完整 Xcode；首次启动时完成 Xcode 的许可证和组件安装。没有 iOS Simulator SDK 时先通过 Xcode Settings → Components 安装相应平台。
+
+| 输出路径 | 来源和目标架构 |
 |---|---|
-| `ThirdParty/CoreFrameworks/SplitVpnCore.xcframework` | device arm64 + simulator arm64/x86_64；`Scripts/build-core-xcframework.sh` |
-| `ThirdParty/SingBoxFrameworks/Libbox.xcframework` | Packet Tunnel 使用的数据面；`Scripts/build-sing-box-libbox.sh` |
-| `ThirdParty/sing-box-src/` | Libbox 对应本地源码，供构建与配置校验 |
-| `ThirdParty/sing-box-for-apple-src/` | 可选的上游 Apple 参考源码；`Scripts/fetch-sing-box-for-apple.sh` |
+| `ThirdParty/CoreFrameworks/SplitVpnCore.xcframework` | 本仓库 `packages/vpn-core`；iOS arm64、Simulator arm64/x86_64 |
+| `ThirdParty/SingBoxFrameworks/Libbox.xcframework` | `SagerNet/sing-box` 固定提交；iOS arm64、Simulator arm64/x86_64 |
+| `ThirdParty/sing-box-src/` | 上述公开源码和对应 `go.mod` / `go.sum` |
+| 仓库根 `.local/ios-go/` | 本项目独立安装的 gomobile / gobind 和 Go module 缓存 |
+| 仓库根 `.local/ios-go-cache/`、`.local/ios-clang-cache/` | Go 与 Clang 编译缓存 |
 
-框架与源码副本不入库。当前扩展使用本地 `LibboxPacketTunnelCore`，无需改为继承上游 `Library.ExtensionProvider`；`Library.xcframework` 属于其他接入方案的可选材料。
+sing-box 的提交与工具版本从 [`third_party/dependencies.lock.json`](../../third_party/dependencies.lock.json) 读取，当前提交为 `320146a106f9baaa57f5e0153675a613940ef91c`，gomobile / gobind 为 `v0.1.13`。脚本检查源码是否有修改，不会强制清理开发者的修改；切换依赖版本前先保存它们。Go 依赖由上游 `go.mod` 和 `go.sum` 校验。脚本使用上游 `build_libbox`，仅选择 iOS 与 Simulator，未修改上游业务源码。
 
-已有框架输出可用 `Scripts/import-sing-box-frameworks.sh /path/to/framework/output` 暂存。源码目录内生成的同名 Libbox 框架可在与暂存副本核对一致后清理，Xcode 使用 `SingBoxFrameworks/` 中的版本。正式分发须保留匹配源码、修改与构建方法；当前构建脚本默认跟随 `testing`，发布前需固定实际版本。
+这些源码副本、框架和缓存均被 Git 忽略。Xcode 已引用两个框架，生成后无需手动拖入工程；本项目实现自己的 `LibboxPacketTunnelCore`，不依赖 `sing-box-for-apple`、`Library.xcframework` 或其应用源码。兼容入口 `fetch-sing-box-for-apple.sh` 只显示说明。
+
+如果从其他机器导入框架，可运行 `Scripts/import-sing-box-frameworks.sh /path/to/framework/output`，但须自行核对固定源码、架构和许可证；推荐直接运行上面的源码构建命令。
+
+## 无账号构建检查
+
+先按根目录 [开发指南](../../docs/DEVELOPMENT.md) 准备规则数据；iOS 使用 `Resources/geodata/` 中的三个 `.srs` 文件。然后执行：
+
+```sh
+xcodebuild -project apps/iphone/SplitVpn.xcodeproj \
+  -scheme SplitVpnIphone -configuration Debug \
+  -destination 'generic/platform=iOS Simulator' \
+  -derivedDataPath .local/ios-simulator CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project apps/iphone/SplitVpn.xcodeproj \
+  -scheme SplitVpnIphone -configuration Debug \
+  -destination 'generic/platform=iOS' \
+  -derivedDataPath .local/ios-device CODE_SIGNING_ALLOWED=NO build
+apps/iphone/Scripts/check-iphone-readiness.sh
+```
+
+这两项 `xcodebuild` 都不需要个人开发团队，不安装 App、不启动 VPN。readiness 会编译通用 iOS 目标、运行恢复与配置测试，并用固定源码执行 `sing-box check`，不建立真实隧道。每次运行会打印独立临时目录，日志保留在其中。若要验证完整配置，不应忽略缺失规则数据的警告。
+
+Xcode 构建会运行仓库的 `scripts/stage-notices.py`，把许可证文本和依赖清单复制到 App 内的 `third-party-licenses/`；该阶段失败时应先解决缺失许可材料再重新构建。
+
+无签名编译只证明工程和依赖能构建。真机安装、Packet Tunnel 权限和实际联网需要自己的 Apple 开发者签名与单独验收。
 
 ## 签名与构建顺序
 
-先按 [开发指南](../../docs/DEVELOPMENT.md#iphone) 准备 Rust 和 Libbox 框架，然后打开：
+完成上述框架和无签名构建检查后，若需真机安装，再打开：
 
 ```sh
 open apps/iphone/SplitVpn.xcodeproj

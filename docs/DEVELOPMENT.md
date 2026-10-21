@@ -12,7 +12,7 @@
 
 ## 源码快照的构建输入
 
-此仓库只提供源码、测试和应用图标。完整安装包还需要本地准备第三方运行内核与 Geo 数据；放置路径与源码来源见 [第三方依赖说明](THIRD_PARTY.md)。首次构建不能依赖其他工作区的缓存、签名文件或生成框架。
+首次构建先执行 [第三方依赖完整步骤](THIRD_PARTY.md) 中对应平台的准备命令，再使用本页的开发测试命令。锁文件固定运行内核、Geo、工具链与许可证输入；完整构建不依赖其他工作区的缓存、签名文件或生成框架。
 
 ## Rust 核心
 
@@ -76,9 +76,7 @@ bash apps/macos-native/script/build_and_run.sh --build-only
 
 ```sh
 SPLITVPN_ARCH=arm64 SPLITVPN_APP_BUNDLE="$PWD/release/mac-arm64/轻舟.app" bash apps/macos-native/script/build_and_run.sh --build-only
-SPLITVPN_SKIP_NOTARIZE=1 bash apps/macos-native/script/package_dmg.sh "release/mac-arm64/轻舟.app"
 SPLITVPN_ARCH=x86_64 SPLITVPN_APP_BUNDLE="$PWD/release/mac-x64/轻舟.app" bash apps/macos-native/script/build_and_run.sh --build-only
-SPLITVPN_SKIP_NOTARIZE=1 bash apps/macos-native/script/package_dmg.sh "release/mac-x64/轻舟.app"
 ```
 
 本地构建默认使用 ad-hoc 签名，不自动选择钥匙串中的个人证书。需要分发签名时，通过 `SPLITVPN_SIGNING_IDENTITY` 显式指定；设为 `auto` 才会自动查找本机证书。构建不启动应用，目标包正在运行时拒绝覆盖。DMG 脚本要求 Developer ID Application 签名、空对象 `config.json`，并检查包内本机路径。已有同名 DMG 时停止，先保留或移走旧包再重建。`SPLITVPN_BUILD_CONFIGURATION=debug` 可用于 Swift 调试。
@@ -153,18 +151,18 @@ apps/iphone/Scripts/package-ios.sh /path/to/output
 
 ## Android
 
-依赖 JDK 17 或更新版本、Android SDK 35、NDK `27.0.12077973`、Gradle 8.10.2 或更新的 8.x，以及 Rust `aarch64-linux-android` target。本次测试使用 Gradle 8.14.3：
+依赖 JDK 17 或更新版本、Android SDK 35、NDK `27.0.12077973`、仓库提供的 Gradle 8.14.3 Wrapper，以及 Rust `aarch64-linux-android` target。本次测试使用 Gradle 8.14.3：
 
 ```sh
 rustup target add aarch64-linux-android
 apps/android/scripts/build-core.sh
 ```
 
-仓库未提交 Gradle Wrapper。可在 Android Studio 打开 `apps/android` 并同步，也可在仓库根目录调用已安装的 Gradle：
+仓库提交了校验官方 SHA 的 Gradle Wrapper。可在 Android Studio 打开 `apps/android` 并同步，也可在仓库根目录执行：
 
 ```sh
 python3 apps/android/tests/native_process.py
-gradle -p apps/android :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+./apps/android/gradlew -p apps/android :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
 python3 apps/android/tests/check_apk.py apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 

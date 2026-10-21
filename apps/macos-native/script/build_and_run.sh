@@ -34,6 +34,9 @@ case "$ARCH" in
   x86_64|x64) RUST_TARGET="x86_64-apple-darwin"; SWIFT_TARGET="x86_64-apple-macosx14.0"; MIHOMO_ARCH="darwin-x64"; GO_ARCH="amd64" ;;
   *) echo "不支持的 macOS 架构：$ARCH" >&2; exit 2 ;;
 esac
+# Fail before compilation when a clean checkout has not prepared its inputs.
+if [[ "$MIHOMO_ARCH" == darwin-arm64 ]]; then DEPENDENCY_PLATFORM=macos-arm64; else DEPENDENCY_PLATFORM=macos-x64; fi
+python3 "$REPO_ROOT/scripts/prepare-third-party.py" --platform "$DEPENDENCY_PLATFORM" --check
 # Strip build-machine paths (user name, folders) from panic locations and
 # compiler-embedded file names, so the shipped app carries no local details.
 REMAP_RUST="--remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup --remap-path-prefix=$REPO_ROOT=/src"
@@ -41,10 +44,11 @@ RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }$REMAP_RUST" cargo build --manifest-path "$R
 CORE_BINARY="$REPO_ROOT/packages/vpn-core/target/$RUST_TARGET/release/splitvpn-core"
 COMPANY_BINARY="$REPO_ROOT/packages/company-vpn/.local/bin/company-account-helper-$GO_ARCH"
 COMPANY_SOURCE="$REPO_ROOT/packages/company-vpn/.local/source"
+COMPANY_GO_VERSION="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["dependencies"]["zju_connect"]["go_version"])' "$REPO_ROOT/third_party/dependencies.lock.json")"
 if [[ ! -f "$COMPANY_SOURCE/go.mod" ]]; then
   echo "缺少已准备的私有网络适配源码，请先运行 packages/company-vpn/prepare.py。" >&2; exit 1
 fi
-(cd "$COMPANY_SOURCE" && GOOS=darwin GOARCH="$GO_ARCH" GOTOOLCHAIN=local GOCACHE="$REPO_ROOT/packages/company-vpn/.local/go-cache" GOMODCACHE="$REPO_ROOT/packages/company-vpn/.local/go-modules" go build -trimpath -ldflags='-s -w' -o "$COMPANY_BINARY" ./cmd/company-account-helper)
+(cd "$COMPANY_SOURCE" && unset GOROOT && GOOS=darwin GOARCH="$GO_ARCH" GOTOOLCHAIN="go$COMPANY_GO_VERSION" GOWORK=off GOFLAGS= GOCACHE="$REPO_ROOT/packages/company-vpn/.local/go-cache" GOMODCACHE="$REPO_ROOT/packages/company-vpn/.local/go-modules" go build -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w' -o "$COMPANY_BINARY" ./cmd/company-account-helper)
 export CLANG_MODULE_CACHE_PATH="$LOCAL_DIR/clang-module-cache"
 # The linker would otherwise record every object file's absolute path.
 SWIFT_REMAP=(-Xswiftc -file-prefix-map -Xswiftc "$REPO_ROOT=/src" -Xlinker -S)
@@ -70,6 +74,7 @@ cp -f "$COMPANY_BINARY" "$APP_BUNDLE/Contents/Resources/company-account-helper"
 mkdir -p "$APP_BUNDLE/Contents/Resources/geodata"
 cp -f "$REPO_ROOT/resources/mihomo/geodata/"* "$APP_BUNDLE/Contents/Resources/geodata/"
 cp "$REPO_ROOT/packages/company-vpn/.local/source/LICENSE" "$APP_BUNDLE/Contents/Resources/LICENSE-ZJU-Connect.txt"
+python3 "$REPO_ROOT/scripts/stage-notices.py" --platform "$DEPENDENCY_PLATFORM" --output "$APP_BUNDLE/Contents/Resources/third-party-licenses"
 cp "$ICON_DIRECTORY/qingzhou.icns" "$APP_BUNDLE/Contents/Resources/icon.icns"
 cp "$ICON_DIRECTORY/qingzhou.png" "$APP_BUNDLE/Contents/Resources/qingzhou-icon.png"
 python3 - "$REPO_ROOT" "$APP_BUNDLE" <<'PY'

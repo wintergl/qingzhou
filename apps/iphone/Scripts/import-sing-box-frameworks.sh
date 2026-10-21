@@ -6,11 +6,9 @@ if [[ $# -ne 1 ]]; then
 Usage:
   apps/iphone/Scripts/import-sing-box-frameworks.sh /path/to/framework/output
 
-The source directory must contain one of:
-  Libbox.xcframework
-  Library.xcframework
-
-Both are preferred. The script stages whatever is present into:
+The source directory must contain Libbox.xcframework built from the pinned
+source in third_party/dependencies.lock.json. Library.xcframework is not used.
+The script stages Libbox.xcframework into:
   apps/iphone/ThirdParty/SingBoxFrameworks
 USAGE
   exit 1
@@ -23,7 +21,7 @@ DEST_DIR="${ROOT_DIR}/ThirdParty/SingBoxFrameworks"
 mkdir -p "${DEST_DIR}"
 
 found=0
-for framework in Libbox.xcframework Library.xcframework; do
+for framework in Libbox.xcframework; do
   if [[ -d "${SOURCE_DIR}/${framework}" ]]; then
     rm -rf "${DEST_DIR:?}/${framework}"
     cp -R "${SOURCE_DIR}/${framework}" "${DEST_DIR}/${framework}"

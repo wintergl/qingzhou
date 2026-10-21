@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build a pinned, isolated aTrust backend; never modify the live application."""
 import argparse
+import json
 import os
 from pathlib import Path
 import re
@@ -11,6 +12,9 @@ ROOT = Path(__file__).resolve().parent
 LOCAL = ROOT / '.local'
 REVISION = '923672dc927e43e04592595a0005ad90a7a3afb5'
 UPSTREAM = 'https://github.com/Mythologyli/zju-connect.git'
+DEPENDENCY = json.loads((ROOT.parents[1] / 'third_party/dependencies.lock.json').read_text())['dependencies']['zju_connect']
+if DEPENDENCY['commit'] != REVISION or DEPENDENCY['repository'] != UPSTREAM:
+    raise RuntimeError('统一锁文件与适配补丁的上游版本不一致。')
 
 def run(*args, cwd=None, env=None):
     subprocess.run(args, cwd=cwd, env=env, check=True)
@@ -146,7 +150,9 @@ for package in ('runtime', 'crypto/sha256'):
 l3.write_text(text)
 
 env = os.environ.copy()
-env.update(GOTOOLCHAIN='local', GOCACHE=str(LOCAL / 'go-cache'), GOMODCACHE=str(LOCAL / 'go-modules'))
+env.pop('GOFLAGS', None)
+env.pop('GOROOT', None)
+env.update(GOTOOLCHAIN='go' + DEPENDENCY['go_version'], GOWORK='off', GOCACHE=str(LOCAL / 'go-cache'), GOMODCACHE=str(LOCAL / 'go-modules'))
 paths = [auth, password, transport, requests, client_source, nodes, tcp, l3, *source.glob('client/atrust/company_*.go'), *source.glob('client/atrust/auth/company_*.go'), *source.glob('internal/company*/*.go'), *source.glob('cmd/company-account-helper/*.go')]
 run('gofmt', '-w', *map(str, paths))
 print('验证证书拦截，再构建独立连接内核。', flush=True)
@@ -155,9 +161,9 @@ run('go', 'test', './cmd/company-account-helper', cwd=source, env=env)
 run('go', 'test', './client/atrust', '-run', '^TestCompanyNode', cwd=source, env=env)
 binary = LOCAL / 'bin/company-connect'
 binary.parent.mkdir(exist_ok=True)
-run('go', 'build', '-ldflags', f'-X main.zjuConnectVersion=splitvpn-company-experiment -X main.CommitID={REVISION}',
+run('go', 'build', '-trimpath', '-buildvcs=false', '-ldflags', f'-X main.zjuConnectVersion=splitvpn-company-experiment -X main.CommitID={REVISION}',
     '-o', str(binary), '.', cwd=source, env=env)
 print(f'实验内核已生成：{binary}')
 account_binary = LOCAL / 'bin/company-account-helper'
-run('go', 'build', '-o', str(account_binary), './cmd/company-account-helper', cwd=source, env=env)
+run('go', 'build', '-trimpath', '-buildvcs=false', '-o', str(account_binary), './cmd/company-account-helper', cwd=source, env=env)
 print(f'账号测试内核已生成：{account_binary}')

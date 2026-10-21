@@ -14,7 +14,41 @@ Kotlin 原生界面 + 共享 Rust 核心 + Android `VpnService`。Kotlin 负责�
 | `app/src/main/jniLibs/arm64-v8a/` | APK 使用的 `libmihomo.so` 与 `libtun2socks.so` |
 | `app/src/main/assets/geodata/` | APK 内置 Geo 数据 |
 
-构建依赖和命令见 [开发指南](../../docs/DEVELOPMENT.md#android)。仓库没有 Gradle Wrapper，可使用已安装的 Gradle 或 Android Studio。
+## 从源码完整构建
+
+在 macOS 或 Linux 上准备 Python 3.12+、`curl`、Go 1.21+（Go 自动下载锁定工具链）、Rust/rustup 和 JDK 17 或 21。Windows 可在 WSL 中构建数据面，Android Studio 负责 APK 构建。Android SDK 需安装 `platforms;android-35`、`build-tools;35.0.0`、`ndk;27.0.12077973`、`cmake;3.22.1`，并设置 `ANDROID_HOME`；macOS 默认 SDK 路径为 `$HOME/Library/Android/sdk`。SDK 安装示例：
+
+```bash
+sdkmanager "platforms;android-35" "build-tools;35.0.0" "ndk;27.0.12077973" "cmake;3.22.1"
+```
+
+以下在仓库根目录执行。首次运行需要访问 GitHub、Go 模块代理、Google Maven 和 Maven Central。Gradle Wrapper 固定为 8.14.3，下载时验证发行包 SHA-256。不要使用宿主机上不兼容的 Gradle 9.x。
+
+```bash
+# 根依赖脚本准备公开 Geo 数据，并将许可证文本放入应用资源。
+python3 scripts/prepare-third-party.py --geodata
+python3 apps/android/scripts/prepare-dependencies.py
+rustup target add aarch64-linux-android
+bash apps/android/scripts/build-core.sh
+python3 apps/android/tests/native_process.py
+apps/android/gradlew -p apps/android --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+python3 apps/android/tests/check_apk.py apps/android/app/build/outputs/apk/debug/app-debug.apk
+```
+
+APK 位于 `app/build/outputs/apk/debug/app-debug.apk`，使用本机 Android 调试证书。上述命令只构建和检查文件，不安装 APK、不启动 VPN。Android Studio 也可打开此目录，使用仓库内 Wrapper；先完成前三方和 Rust 准备步骤。
+
+两个名为 `.so` 的数据面文件实际是**独立可执行程序**，不是给 `System.loadLibrary` 加载的 JNI 库。准备脚本读取 [固定版本清单](../../third_party/dependencies.lock.json)，下载公开源码、验证归档 SHA-256、使用上游 `go.mod` / `go.sum` 构建，再放入 `jniLibs/arm64-v8a/`：
+
+| 组件 | 构建方式与接入 |
+|---|---|
+| Mihomo | Go 1.26.4，`GOOS=android GOARCH=arm64 CGO_ENABLED=1`，NDK API 26 Clang，`with_gvisor`、PIE、外部链接；`ProcessBuilder` 启动 |
+| tun2socks | Go 1.23.1，`GOOS=linux GOARCH=arm64 CGO_ENABLED=0`，上游静态可执行程序；原生启动器 `exec`，继承 `fd://3` |
+
+tun2socks 的旧 gVisor 与 Go 工具链紧密相关，因此单独锁定 Go 1.23.1。不能简单改为最新 Go，也不能用 `c-shared` 替代其可执行入口。准备脚本检查 AArch64、非零 ELF 入口、所有 `PT_LOAD` 至少 16 KB 对齐，并去除本机编译路径；CMake 的两个 JNI 库由 NDK 的 flexible-page-size 开关处理。`check_apk.py` 再核对 APK 内四个 ELF、Geo 文件、签名、ZIP 对齐和敏感路径。
+
+缓存、构建报告、`go version -m` 证据位于仓库 `.local/android-dependencies/`，均不提交。若只需检查已经准备的内核，可运行 `python3 apps/android/scripts/prepare-dependencies.py --check`。源码包与许可证可以公开，下载缓存、个人签名证书和 APK 不应混入 Git。
+
+准备脚本还会把两个 Go 工程的模块版本清单、模块目录中的 `LICENSE` / `COPYING` / `NOTICE` 等文件复制到 `app/src/main/assets/third-party-licenses/`，随 APK 分发；统一第三方许可文本由 Gradle `preBuild` 调用根脚本补齐。APK 分发者仍需同时提供对应源码、固定版本与构建脚本，并遵守 [第三方依赖说明](../../docs/THIRD_PARTY.md)；此处收集文件不等于自动完成所有分发义务。其他开发说明见 [开发指南](../../docs/DEVELOPMENT.md#android)。
 
 ## 数据面与生命周期
 

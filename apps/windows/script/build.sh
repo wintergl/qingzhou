@@ -17,6 +17,7 @@ fi
 export DOTNET_CLI_HOME="${DOTNET_CLI_HOME:-$APP/.local/dotnet-home}"
 export NUGET_PACKAGES="${NUGET_PACKAGES:-$APP/.local/nuget-packages}"
 export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+python3 "$ROOT/scripts/prepare-third-party.py" --platform windows-x64 --check
 # Panic locations and compiler file names must not disclose the build machine.
 export RUSTFLAGS="${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=$HOME=/user --remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup --remap-path-prefix=$ROOT=/src"
 python3 "$APP/script/check_tray_assets.py"
@@ -24,12 +25,11 @@ python3 "$APP/script/check_tray_assets.py"
 cargo build --release --locked --target "$TARGET" \
   --manifest-path "$ROOT/packages/vpn-core/Cargo.toml" --target-dir "$ROOT/packages/vpn-core/target"
 
-# Refresh the authentication overlay before cross-building. Reusing stale source
-# can silently package an older helper without the password-change protocol.
-python3 "$ROOT/packages/company-vpn/prepare.py"
+# The preparation record verifies the fixed source inputs before packaging.
 COMPANY="$ROOT/packages/company-vpn/.local"
-(cd "$COMPANY/source" && GOOS=windows GOARCH=amd64 GOTOOLCHAIN=local GOCACHE="$COMPANY/go-cache" GOMODCACHE="$COMPANY/go-modules" \
-  go build -trimpath -ldflags='-s -w' -o "$COMPANY/bin/company-account-helper-windows-amd64.exe" ./cmd/company-account-helper)
+COMPANY_GO_VERSION="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["dependencies"]["zju_connect"]["go_version"])' "$ROOT/third_party/dependencies.lock.json")"
+(cd "$COMPANY/source" && unset GOROOT && GOOS=windows GOARCH=amd64 GOTOOLCHAIN="go$COMPANY_GO_VERSION" GOWORK=off GOFLAGS= GOCACHE="$COMPANY/go-cache" GOMODCACHE="$COMPANY/go-modules" \
+  go build -mod=readonly -trimpath -buildvcs=false -ldflags='-s -w' -o "$COMPANY/bin/company-account-helper-windows-amd64.exe" ./cmd/company-account-helper)
 
 mkdir -p "$OUT/geodata"
 # Self-contained single file: the .NET runtime ships inside Qingzhou.exe.
@@ -41,6 +41,7 @@ cp "$ROOT/resources/mihomo/geodata/"* "$OUT/geodata/"
 cp "$COMPANY/bin/company-account-helper-windows-amd64.exe" "$OUT/company-account-helper.exe"
 cp "$COMPANY/source/LICENSE" "$OUT/LICENSE-ZJU-Connect.txt"
 cp "$ROOT/LICENSE" "$OUT/LICENSE-Qingzhou.txt"
+python3 "$ROOT/scripts/stage-notices.py" --platform windows-x64 --output "$OUT/third-party-licenses"
 # Retain licenses/notices for the exact runtime packs selected by restore.
 python3 - "$APP/Qingzhou/obj/project.assets.json" "$NUGET_PACKAGES" "$OUT" <<'PY'
 import json, shutil, sys

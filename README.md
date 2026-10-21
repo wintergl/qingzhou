@@ -67,7 +67,7 @@ flowchart LR
 | [docs](docs/README.md) | 开发指南、源码快照说明及第三方依赖说明 |
 | `release/` | 本机安装包、回退版本与整理记录，Git 忽略 |
 
-这是独立源码快照，不含预编译内核、Geo 数据、签名文件、安装包或历史文档。Rust 核心和 macOS SwiftPM 可分别构建与测试；生成完整安装包前，先按 [第三方依赖说明](docs/THIRD_PARTY.md) 准备所需资源。构建、测试和打包命令见 [开发指南](docs/DEVELOPMENT.md)。
+这是独立源码快照，不含预编译内核、Geo 数据、签名文件、安装包或历史文档。Rust 核心和 macOS SwiftPM 可分别构建与测试；生成完整安装包前，按 [第三方依赖完整构建步骤](docs/THIRD_PARTY.md) 一次性准备对应平台所需资源。构建、测试和打包命令见 [开发指南](docs/DEVELOPMENT.md)。
 
 ## 用户数据与安全
 
@@ -82,4 +82,4 @@ flowchart LR
 
 ## 许可证与公开发布
 
-原创代码保留根目录 [Apache-2.0](LICENSE)；接入适配代码沿用其目录内的 [AGPL-3.0](packages/company-vpn/LICENSE)。第三方组件的源码、许可证及安装包声明分别整理，见 [第三方依赖说明](docs/THIRD_PARTY.md)。源码快照范围与隐私检查见 [源码说明](docs/SOURCE_SNAPSHOT.md)。
+原创代码保留根目录 [Apache-2.0](LICENSE)；接入适配代码沿用其目录内的 [AGPL-3.0](packages/company-vpn/LICENSE)。第三方组件的固定版本、源码准备与完整构建步骤见 [第三方依赖说明](docs/THIRD_PARTY.md)，许可范围与对应源码见 [许可证说明](docs/LICENSES.md)。源码快照范围与隐私检查见 [源码说明](docs/SOURCE_SNAPSHOT.md)。

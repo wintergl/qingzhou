@@ -43,6 +43,7 @@ android {
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
         }
     }
 }
@@ -55,4 +56,22 @@ kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
+}
+
+// Package the notices for the exact source/dependency snapshot used by this APK.
+// Keep Go module notices from prepare-dependencies.py in their own directories.
+val stageThirdPartyNotices by tasks.registering(Exec::class) {
+    val repositoryRoot = rootProject.projectDir.resolve("../..").canonicalFile
+    workingDir(repositoryRoot)
+    commandLine("python3", "scripts/stage-notices.py", "--platform", "android-arm64",
+        "--output", "apps/android/app/src/main/assets/third-party-licenses/source-notices")
+}
+
+val verifyNativeExecutables by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.resolve("../..").canonicalFile)
+    commandLine("python3", "apps/android/scripts/prepare-dependencies.py", "--check")
+}
+
+tasks.named("preBuild") {
+    dependsOn(stageThirdPartyNotices, verifyNativeExecutables)
 }

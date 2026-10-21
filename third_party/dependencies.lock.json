@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "dependencies": {
+    "mihomo": {
+      "repository": "https://github.com/MetaCubeX/mihomo.git",
+      "commit": "fc8c5a24b16991f98cd736950c17d1aa306a5041",
+      "go_version": "1.26.4",
+      "license": "GPL-3.0-only",
+      "license_file": "third_party/licenses/mihomo.LICENSE",
+      "license_sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "archive_sha256": "b74a62738cf68a8418c67aafc31d0c9b0fb92167d810facb637ad1b2c5f076fe"
+    },
+    "mihomo_android": {
+      "repository": "https://github.com/MetaCubeX/mihomo.git",
+      "commit": "5184081ac327394d9e15fa5d5f9f4a61e723fd94",
+      "go_version": "1.26.4",
+      "archive_sha256": "bf3a188a83475000df235178edf61cd70fda22b884b19a539d0cfd9b89a51e6a",
+      "license": "GPL-3.0-only",
+      "license_file": "third_party/licenses/mihomo_android.LICENSE",
+      "license_sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    "tun2socks": {
+      "repository": "https://github.com/xjasonlyu/tun2socks.git",
+      "commit": "4127937ea7c450a5230b273f406c9410acec2be7",
+      "go_version": "1.23.1",
+      "archive_sha256": "4dea2e3da047c0a599fc5338fb51831f927fdc099b28bbc9b784a766c9eb5838",
+      "license": "MIT",
+      "license_file": "third_party/licenses/tun2socks.LICENSE",
+      "license_sha256": "796abbf6d0258a01321f88f72c1d712417acdd75342510f0796f7c567b6f05e5"
+    },
+    "sing_box": {
+      "repository": "https://github.com/SagerNet/sing-box.git",
+      "commit": "320146a106f9baaa57f5e0153675a613940ef91c",
+      "gomobile_version": "v0.1.13",
+      "license": "GPL-3.0-or-later",
+      "license_file": "third_party/licenses/sing_box.LICENSE",
+      "license_sha256": "650d5e3b99a446fb38e820fa87a49562e0c79eab868fff58618ac487a58e554c",
+      "go_version": "1.26.4"
+    },
+    "zju_connect": {
+      "repository": "https://github.com/Mythologyli/zju-connect.git",
+      "commit": "923672dc927e43e04592595a0005ad90a7a3afb5",
+      "go_version": "1.26.4",
+      "license": "AGPL-3.0-only",
+      "license_file": "third_party/licenses/zju_connect.LICENSE",
+      "license_sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+    },
+    "meta_rules": {
+      "repository": "https://github.com/MetaCubeX/meta-rules-dat.git",
+      "commit": "4178770badecb1b349fbcd62c737e0d7a2079729",
+      "license": "GPL-3.0-only",
+      "license_file": "third_party/licenses/meta_rules.LICENSE",
+      "license_sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    "sing_geosite": {
+      "repository": "https://github.com/SagerNet/sing-geosite.git",
+      "commit": "dd64ae0ebf2ee69166c0510042b3e96c085f27df",
+      "license": "GPL-3.0-or-later",
+      "license_file": "third_party/licenses/sing_geosite.LICENSE",
+      "license_sha256": "2f02b7486bcfa90d115c71a20437f3906b6fd5bef81c5dc0efd341399e89d0fd"
+    },
+    "sing_geoip": {
+      "repository": "https://github.com/SagerNet/sing-geoip.git",
+      "commit": "ecd02c178af5efbac38d427a8d178f940327de1f",
+      "license": "GPL-3.0-or-later",
+      "license_file": "third_party/licenses/sing_geoip.LICENSE",
+      "license_sha256": "2f02b7486bcfa90d115c71a20437f3906b6fd5bef81c5dc0efd341399e89d0fd"
+    }
+  },
+  "data": {
+    "meta-geosite.dat": {
+      "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/eed74d50aa6083d028110ed3feaf37f5e3070d9d/geosite.dat",
+      "commit": "eed74d50aa6083d028110ed3feaf37f5e3070d9d",
+      "destinations": [
+        "resources/mihomo/geodata/GeoSite.dat",
+        "apps/android/app/src/main/assets/geodata/GeoSite.dat"
+      ],
+      "source_component": "meta_rules",
+      "sha256": "77a487c5599edb9b69c9ea28bbf07385dd186156a9d7f3ebe3bfad397f1cc2c9"
+    },
+    "meta-country.mmdb": {
+      "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/eed74d50aa6083d028110ed3feaf37f5e3070d9d/country.mmdb",
+      "commit": "eed74d50aa6083d028110ed3feaf37f5e3070d9d",
+      "destinations": [
+        "resources/mihomo/geodata/country.mmdb",
+        "apps/android/app/src/main/assets/geodata/country.mmdb"
+      ],
+      "source_component": "meta_rules",
+      "sha256": "8f52d5a2df1f1efe2653ce675b6cabc01909258a72b63b482abaab248a8a434d"
+    },
+    "meta-geoip.metadb": {
+      "url": "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/eed74d50aa6083d028110ed3feaf37f5e3070d9d/geoip.metadb",
+      "commit": "eed74d50aa6083d028110ed3feaf37f5e3070d9d",
+      "destinations": [
+        "resources/mihomo/geodata/geoip.metadb",
+        "apps/android/app/src/main/assets/geodata/geoip.metadb"
+      ],
+      "source_component": "meta_rules",
+      "sha256": "b9c84a522da098bc3e8a23e30e426bc3c916d532b1d7d4e4b41590d5f847daa2"
+    },
+    "geosite-cn.srs": {
+      "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/50375ffe2f3a40cad8ce2ecf6c37afcbb7e01984/geosite-cn.srs",
+      "commit": "50375ffe2f3a40cad8ce2ecf6c37afcbb7e01984",
+      "destinations": [
+        "apps/iphone/Resources/geodata/geosite-cn.srs"
+      ],
+      "source_component": "sing_geosite",
+      "sha256": "e1442916bbb370dc46905ebb1700c75f3be4bc5311c708543b8a5dfc90f7b9d4"
+    },
+    "geosite-geolocation-!cn.srs": {
+      "url": "https://raw.githubusercontent.com/SagerNet/sing-geosite/50375ffe2f3a40cad8ce2ecf6c37afcbb7e01984/geosite-geolocation-!cn.srs",
+      "commit": "50375ffe2f3a40cad8ce2ecf6c37afcbb7e01984",
+      "destinations": [
+        "apps/iphone/Resources/geodata/geosite-geolocation-!cn.srs"
+      ],
+      "source_component": "sing_geosite",
+      "sha256": "4edc1cb687f38dd739d71841c2120f664c6754868dd1c7ec9641a39a6da1668a"
+    },
+    "geoip-cn.srs": {
+      "url": "https://raw.githubusercontent.com/SagerNet/sing-geoip/eb32cd6ed4a16fcb3bf9a36ccebf28e45716ae84/geoip-cn.srs",
+      "commit": "eb32cd6ed4a16fcb3bf9a36ccebf28e45716ae84",
+      "destinations": [
+        "apps/iphone/Resources/geodata/geoip-cn.srs"
+      ],
+      "source_component": "sing_geoip",
+      "sha256": "81ada5cafd9d831adc48776f29cdfe55c9713d9287caeef9de925ef30f66cce4"
+    }
+  },
+  "license_documents": [
+    {
+      "path": "third_party/licenses/Go.LICENSE",
+      "url": "https://raw.githubusercontent.com/golang/go/go1.26.4/LICENSE",
+      "sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    },
+    {
+      "path": "third_party/licenses/Go.PATENTS",
+      "url": "https://raw.githubusercontent.com/golang/go/go1.26.4/PATENTS",
+      "sha256": "96f408bfae65bf137fc2525d3ecb030271c50c1e90799f87abf8846d8dd505cc"
+    },
+    {
+      "path": "third_party/licenses/Gradle.LICENSE",
+      "url": "https://raw.githubusercontent.com/gradle/gradle/v8.14.3/LICENSE",
+      "sha256": "9536d88ea948603d18e232a13f5958d67807cd80828036b082bff171d2cf0703"
+    }
+  ],
+  "toolchains": {
+    "python_minimum": "3.12",
+    "rust_minimum": "1.85",
+    "gradle": {
+      "version": "8.14.3",
+      "distribution_sha256": "bd71102213493060956ec229d946beee57158dbd89d0e62b91bca0fa2c5f3531",
+      "wrapper_jar_sha256": "7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172"
+    },
+    "android": {
+      "compile_sdk": 35,
+      "ndk": "27.0.12077973",
+      "cmake": "3.22.1"
+    }
+  }
+}

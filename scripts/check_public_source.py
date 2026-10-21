@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check source intended for publication without printing matched values."""
 import json
+import hashlib
 from pathlib import Path
 import re
 import subprocess
@@ -37,6 +38,13 @@ def main():
         ['git', 'ls-files', '-co', '--exclude-standard', '-z'], cwd=ROOT
     ).decode().split('\0')
     findings = []
+    lock_path = ROOT / 'third_party/dependencies.lock.json'
+    upstream_licenses = {}
+    if lock_path.is_file():
+        lock = json.loads(lock_path.read_text())
+        upstream_licenses.update({item['license_file']: item['license_sha256']
+                                  for item in lock['dependencies'].values() if 'license_file' in item})
+        upstream_licenses.update({item['path']: item['sha256'] for item in lock.get('license_documents', [])})
     checked = 0
     for name in sorted(set(filter(None, names))):
         path = ROOT / name
@@ -54,6 +62,9 @@ def main():
                 or name.startswith('docs/archive/')):
             findings.append({'file': name, 'kind': 'local-or-distribution-artifact'})
         raw = path.read_bytes()
+        verified_license = name in upstream_licenses and hashlib.sha256(raw).hexdigest() == upstream_licenses[name]
+        if name in upstream_licenses and not verified_license:
+            findings.append({'file': name, 'kind': 'changed-upstream-license'})
         if b'\0' in raw[:8192]:
             continue
         try:
@@ -65,6 +76,9 @@ def main():
                 if pattern.search(line):
                     findings.append({'file': name, 'line': line_no, 'kind': kind})
             for match in EMAIL.finditer(line):
+                # Retain verified third-party copyright attributions verbatim.
+                if verified_license:
+                    continue
                 domain = match[1].lower()
                 if not (domain.endswith(('.test', '.invalid'))
                         or any(domain == example or domain.endswith('.' + example)

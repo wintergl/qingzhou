@@ -64,3 +64,4 @@ resources/mihomo/geodata/
 apps/android/app/src/main/jniLibs/
 apps/android/app/src/main/assets/geodata/
 apps/iphone/Resources/geodata/
+apps/android/app/src/main/assets/third-party-licenses/

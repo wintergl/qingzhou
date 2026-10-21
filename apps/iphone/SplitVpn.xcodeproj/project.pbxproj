@@ -259,6 +259,7 @@
 				700000000000000000000001 /* Frameworks */,
 				A00000000000000000000002 /* Resources */,
 				600000000000000000000001 /* Embed App Extensions */,
+				D00000000000000000000001 /* Third-party notices */,
 			);
 			buildRules = (
 			);
@@ -345,6 +346,21 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		D00000000000000000000001 /* Third-party notices */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = ();
+			name = "Third-party notices";
+			outputPaths = ();
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\npython3 \"$SRCROOT/../../scripts/stage-notices.py\" --platform ios --output \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/third-party-licenses\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		A00000000000000000000001 /* Sources */ = {

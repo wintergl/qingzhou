@@ -1,10 +1,20 @@
 # 轻舟（split-vpn）
 
-跨平台网络分流与连接管理工具。共享 Rust 核心负责订阅、节点与规则，macOS / Windows / iOS / Android 使用各自的原生界面和系统 VPN 接入。
+让个人 VPN、局域网和私有网络各走其路的原生智能分流客户端。共享 Rust 核心负责订阅、节点与规则，macOS / Windows / iOS / Android 使用各自的原生界面和系统 VPN 接入。
 
 当前源码版本为 **0.6.5**。桌面端提供 aTrust 私有网络接入；地址和账号由用户配置，EasyConnect 尚未接入。各端安装包和真实联网按平台分别验收。
 
 macOS / Windows 已接入网络切换、断网恢复和睡眠唤醒的自动处理，并根据窗口可见性与系统省电状态减少后台工作，详见 [macOS](apps/macos-native/README.md#网络切换与后台省电) / [Windows](apps/windows/README.md#网络切换与后台省电)。Windows 原生通知与实际耗电量仍待实机测试。
+
+## 界面预览
+
+| 总览：个人 VPN 与私有网络共存 | 节点组：多节点统一管理 |
+|---|---|
+| ![轻舟总览页，展示个人 VPN 与私有网络状态](docs/images/qingzhou-overview-light.png) | ![轻舟节点组页，展示示例节点和延迟](docs/images/qingzhou-node-groups-dark.png) |
+| **分流规则：为地址选择 VPN 或直连** | **私有网络：连接、资源与接管分开控制** |
+| ![轻舟分流规则页，展示 VPN 与直连示例规则](docs/images/qingzhou-routing-light.png) | ![轻舟私有网络页，展示示例授权资源](docs/images/qingzhou-private-network-light.png) |
+
+以上图片由离线示例数据生成，不含真实订阅、节点、账号、网关或业务地址。
 
 ## 能做什么
 

@@ -1,0 +1,509 @@
+name: Build and prerelease
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qingzhou-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHONUNBUFFERED: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  metadata:
+    name: Source and release metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.versions.outputs.version }}
+      go_version: ${{ steps.versions.outputs.go_version }}
+      android_api: ${{ steps.versions.outputs.android_api }}
+      android_ndk: ${{ steps.versions.outputs.android_ndk }}
+      android_cmake: ${{ steps.versions.outputs.android_cmake }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Audit the public source tree
+        run: python3 scripts/check_public_source.py
+
+      - name: Check release versions
+        id: versions
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            python3 scripts/check-release-version.py --tag "${GITHUB_REF_NAME}"
+          else
+            python3 scripts/check-release-version.py
+          fi
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          with open("third_party/dependencies.lock.json", encoding="utf-8") as stream:
+              lock = json.load(stream)
+          values = {
+              "version": subprocess.check_output(
+                  ["python3", "scripts/check-release-version.py", "--print-version"],
+                  text=True,
+              ).strip(),
+              "go_version": lock["dependencies"]["mihomo"]["go_version"],
+              "android_api": lock["toolchains"]["android"]["compile_sdk"],
+              "android_ndk": lock["toolchains"]["android"]["ndk"],
+              "android_cmake": lock["toolchains"]["android"]["cmake"],
+          }
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  print(f"{key}={value}", file=output)
+          PY
+
+      - name: Run offline release-script tests
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+
+  rust:
+    name: Rust core checks
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Select the stable Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup component add clippy
+
+      - name: Test the core
+        env:
+          SPLITVPN_ISOLATED: "1"
+          SPLITVPN_DATA_DIR: ${{ runner.temp }}/qingzhou-rust-data
+        run: cargo test --manifest-path packages/vpn-core/Cargo.toml --all-targets --locked
+
+      - name: Lint the core
+        run: cargo clippy --manifest-path packages/vpn-core/Cargo.toml --all-targets --locked -- -D warnings
+
+      - name: Exercise the stdio RPC
+        env:
+          SPLITVPN_ISOLATED: "1"
+          SPLITVPN_DATA_DIR: ${{ runner.temp }}/qingzhou-rpc-data
+        run: python3 packages/vpn-core/tests/rpc_integration.py
+
+  macos:
+    name: macOS ${{ matrix.arch }} ad-hoc package
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            platform: macos-arm64
+          - runner: macos-15-intel
+            arch: x86_64
+            platform: macos-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 75
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up locked Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.metadata.outputs.go_version }}
+          cache: false
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Prepare Rust target
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add "${{ matrix.arch == 'arm64' && 'aarch64-apple-darwin' || 'x86_64-apple-darwin' }}"
+
+      - name: Prepare pinned third-party inputs
+        run: python3 scripts/prepare-third-party.py --platform "${{ matrix.platform }}"
+
+      - name: Build and verify the ad-hoc app
+        env:
+          SPLITVPN_ARCH: ${{ matrix.arch }}
+          SPLITVPN_APP_BUNDLE: ${{ github.workspace }}/release/ci/${{ matrix.platform }}/轻舟.app
+          SPLITVPN_SIGNING_IDENTITY: "-"
+        run: |
+          mkdir -p "$(dirname "${SPLITVPN_APP_BUNDLE}")"
+          sh apps/macos-native/script/build_and_run.sh --build-only
+          codesign --verify --strict "${SPLITVPN_APP_BUNDLE}"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "${SPLITVPN_APP_BUNDLE}/Contents/Info.plist")" = "${{ needs.metadata.outputs.version }}"
+          lipo -archs "${SPLITVPN_APP_BUNDLE}/Contents/MacOS/SplitVPNNative" | grep -qw "${{ matrix.arch }}"
+          lipo -archs "${SPLITVPN_APP_BUNDLE}/Contents/Resources/splitvpn-core" | grep -qw "${{ matrix.arch }}"
+          python3 apps/macos-native/script/verify_runtime.py
+
+      - name: Package binary and corresponding source
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          output="release/ci/${PLATFORM}"
+          ditto -c -k --sequesterRsrc --keepParent "${output}/轻舟.app" "${output}/qingzhou-${VERSION}-${PLATFORM}-adhoc.zip"
+          python3 scripts/export-corresponding-source.py \
+            --platform "${PLATFORM}" \
+            --output "${output}/qingzhou-${VERSION}-${PLATFORM}-source.tar.gz"
+
+      - name: Upload short-lived macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qingzhou-${{ needs.metadata.outputs.version }}-${{ matrix.platform }}
+          path: |
+            release/ci/${{ matrix.platform }}/qingzhou-${{ needs.metadata.outputs.version }}-${{ matrix.platform }}-adhoc.zip
+            release/ci/${{ matrix.platform }}/qingzhou-${{ needs.metadata.outputs.version }}-${{ matrix.platform }}-source.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  windows:
+    name: Windows x64 unsigned package
+    needs: metadata
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Set up locked Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.metadata.outputs.go_version }}
+          cache: false
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Windows cross-build tools
+        run: |
+          brew install mingw-w64
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add x86_64-pc-windows-gnu
+
+      - name: Prepare pinned third-party inputs
+        run: python3 scripts/prepare-third-party.py --platform windows-x64
+
+      - name: Build and verify the unsigned ZIP
+        env:
+          SPLITVPN_WINDOWS_RELEASE_DIR: ${{ github.workspace }}/release/ci/windows-x64
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          mkdir -p "${SPLITVPN_WINDOWS_RELEASE_DIR}"
+          sh apps/windows/script/build.sh
+          source_zip="${SPLITVPN_WINDOWS_RELEASE_DIR}/Qingzhou-${VERSION}-windows-x64.zip"
+          output_zip="${SPLITVPN_WINDOWS_RELEASE_DIR}/qingzhou-${VERSION}-windows-x64-unsigned.zip"
+          test -s "${source_zip}"
+          unzip -t "${source_zip}"
+          mv "${source_zip}" "${output_zip}"
+          python3 scripts/export-corresponding-source.py \
+            --platform windows-x64 \
+            --output "${SPLITVPN_WINDOWS_RELEASE_DIR}/qingzhou-${VERSION}-windows-x64-source.tar.gz"
+
+      - name: Upload short-lived Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qingzhou-${{ needs.metadata.outputs.version }}-windows-x64
+          path: |
+            release/ci/windows-x64/qingzhou-${{ needs.metadata.outputs.version }}-windows-x64-unsigned.zip
+            release/ci/windows-x64/qingzhou-${{ needs.metadata.outputs.version }}-windows-x64-source.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  android:
+    name: Android arm64 debug APK
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up Java 17 and Gradle cache
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+          cache-dependency-path: |
+            apps/android/*.gradle.kts
+            apps/android/gradle/wrapper/gradle-wrapper.properties
+            apps/android/app/*.gradle.kts
+
+      - name: Set up locked Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.metadata.outputs.go_version }}
+          cache: false
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Android and Rust targets
+        run: |
+          sdkmanager \
+            "platforms;android-${{ needs.metadata.outputs.android_api }}" \
+            "build-tools;${{ needs.metadata.outputs.android_api }}.0.0" \
+            "ndk;${{ needs.metadata.outputs.android_ndk }}" \
+            "cmake;${{ needs.metadata.outputs.android_cmake }}"
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add aarch64-linux-android
+
+      - name: Prepare pinned native dependencies
+        run: python3 scripts/prepare-third-party.py --platform android-arm64
+
+      - name: Build, lint, and inspect the debug APK
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          python3 scripts/export-corresponding-source.py \
+            --platform android-arm64 \
+            --output "release/ci/android-arm64/qingzhou-${VERSION}-android-arm64-source.tar.gz"
+          apps/android/gradlew -p apps/android --no-daemon \
+            :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+          apk="apps/android/app/build/outputs/apk/debug/app-debug.apk"
+          python3 apps/android/tests/check_apk.py "${apk}"
+          cp "${apk}" "release/ci/android-arm64/qingzhou-${VERSION}-android-arm64-debug.apk"
+
+      - name: Upload short-lived Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qingzhou-${{ needs.metadata.outputs.version }}-android-arm64
+          path: |
+            release/ci/android-arm64/qingzhou-${{ needs.metadata.outputs.version }}-android-arm64-debug.apk
+            release/ci/android-arm64/qingzhou-${{ needs.metadata.outputs.version }}-android-arm64-source.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  ios:
+    name: iOS unsigned Simulator app
+    needs: metadata
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Set up locked Go toolchain
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ needs.metadata.outputs.go_version }}
+          cache: false
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-registry-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Prepare Apple Rust targets
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+
+      - name: Prepare pinned frameworks and corresponding source
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          df -h .
+          python3 scripts/prepare-third-party.py --platform ios
+          python3 scripts/export-corresponding-source.py \
+            --platform ios \
+            --output "release/ci/ios/qingzhou-${VERSION}-ios-source.tar.gz"
+
+      - name: Reclaim rebuildable caches before Xcode
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          for name in (
+              "packages/vpn-core/target",
+              ".local/ios-go",
+              ".local/ios-go-cache",
+              ".local/ios-clang-cache",
+              "apps/iphone/ThirdParty/sing-box-src",
+          ):
+              path = Path(name)
+              if path.exists():
+                  shutil.rmtree(path)
+          PY
+          df -h .
+
+      - name: Build the unsigned Simulator app
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          derived="${RUNNER_TEMP}/qingzhou-ios-derived-data"
+          xcodebuild \
+            -project apps/iphone/SplitVpn.xcodeproj \
+            -scheme SplitVpnIphone \
+            -configuration Release \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath "${derived}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            build
+          app="$(find "${derived}/Build/Products/Release-iphonesimulator" -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "${app}"
+          test ! -e "${app}/_CodeSignature"
+          test "$(plutil -extract CFBundleShortVersionString raw -o - "${app}/Info.plist")" = "${VERSION}"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "${app}" "release/ci/ios/qingzhou-${VERSION}-ios-simulator-unsigned.zip"
+
+      - name: Upload short-lived iOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qingzhou-${{ needs.metadata.outputs.version }}-ios-simulator
+          path: |
+            release/ci/ios/qingzhou-${{ needs.metadata.outputs.version }}-ios-simulator-unsigned.zip
+            release/ci/ios/qingzhou-${{ needs.metadata.outputs.version }}-ios-source.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  prerelease:
+    name: Publish GitHub prerelease
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - metadata
+      - rust
+      - macos
+      - windows
+      - android
+      - ios
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: qingzhou-${{ needs.metadata.outputs.version }}-*
+          path: release/assets
+          merge-multiple: true
+
+      - name: Generate SHA-256 manifest
+        run: |
+          python3 - <<'PY'
+          from hashlib import sha256
+          from pathlib import Path
+
+          root = Path("release/assets")
+          files = sorted(path for path in root.iterdir() if path.is_file())
+          if not files:
+              raise SystemExit("No release artifacts were downloaded")
+          lines = []
+          for path in files:
+              digest = sha256()
+              with path.open("rb") as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(block)
+              lines.append(f"{digest.hexdigest()}  {path.name}")
+          (root / "SHA256SUMS").write_text("\n".join(lines) + "\n")
+          PY
+
+      - name: Create or update the prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            test "$(gh release view "${TAG}" --json isPrerelease --jq .isPrerelease)" = "true" || {
+              echo "Refusing to replace an existing non-prerelease: ${TAG}" >&2
+              exit 1
+            }
+            gh release edit "${TAG}" --prerelease --title "轻舟 ${TAG}"
+          else
+            gh release create "${TAG}" --verify-tag --prerelease --generate-notes --title "轻舟 ${TAG}"
+          fi
+          gh release upload "${TAG}" release/assets/* --clobber

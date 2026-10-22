@@ -16,10 +16,16 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.provider.Telephony
 import dev.splitvpn.android.runtime.AndroidEnvironmentMonitor
+import dev.splitvpn.android.runtime.HealthDecision
+import dev.splitvpn.android.runtime.HealthProbePolicy
+import dev.splitvpn.android.runtime.HealthProbeToken
 import dev.splitvpn.android.runtime.LifecycleGate
 import dev.splitvpn.android.runtime.NetworkState
 import dev.splitvpn.android.runtime.PowerState
+import dev.splitvpn.android.runtime.ProbeFailureKind
+import dev.splitvpn.android.runtime.ProbeOutcome
 import dev.splitvpn.android.runtime.RecoveryPolicy
+import dev.splitvpn.android.runtime.shouldProbeVpnEgress
 import dev.splitvpn.android.core.CoreClient
 import dev.splitvpn.android.core.RecoveryEventCoalescer
 import dev.splitvpn.android.core.MihomoConfigGenerator
@@ -33,6 +39,7 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.Executors
 import java.util.concurrent.ExecutionException
+import java.util.concurrent.Future
 import java.util.concurrent.ScheduledFuture
 
 class SplitVpnService : VpnService() {
@@ -43,8 +50,11 @@ class SplitVpnService : VpnService() {
     private var tunInterface: ParcelFileDescriptor? = null
     private val dataPlaneExecutor = lifecycleExecutor
     private val monitorExecutor = Executors.newSingleThreadScheduledExecutor()
+    private val probeExecutor = Executors.newSingleThreadExecutor()
     private var monitorTask: ScheduledFuture<*>? = null
     private var retryTask: ScheduledFuture<*>? = null
+    private var healthProbeTask: Future<*>? = null
+    private var healthProbeToken: HealthProbeToken? = null
     private val gate = LifecycleGate()
     private val recovery = RecoveryPolicy()
     private val recoveryEvents = RecoveryEventCoalescer()
@@ -55,7 +65,7 @@ class SplitVpnService : VpnService() {
     @Volatile private var destroyed = false
     @Volatile private var managedAlwaysOn = false
     private var sessionGeneration = 0L
-    private var healthFailures = 0
+    private val healthProbePolicy = HealthProbePolicy()
     private val runtime by lazy { RuntimeStatusRepository(this) }
     private val mainHandler = Handler(Looper.getMainLooper())
     private val commandLock = Any()
@@ -133,6 +143,7 @@ class SplitVpnService : VpnService() {
             startupThread?.interrupt()
         }
         monitorExecutor.shutdownNow()
+        probeExecutor.shutdownNow()
         dataPlaneExecutor.execute {
             cancelRetry()
             stopDataPlane(markStopped = !preserveErrorState && !runtime.connectWanted())
@@ -164,6 +175,11 @@ class SplitVpnService : VpnService() {
         if (destroyed || !gate.accepts(revision)) return
         cancelRetry()
         val proxy = SettingsRepository(this).getSelectedProxy()
+        if (power.idle) {
+            runtime.markRecovering("设备休眠中，唤醒后自动恢复", proxy)
+            updateNotification("设备休眠中，唤醒后自动恢复")
+            return
+        }
         if (network.available == false) {
             stopDataPlane(markStopped = false, removeForeground = false)
             runtime.markRecovering("网络暂不可用，联网后自动恢复", proxy, waitingNetwork = true)
@@ -182,6 +198,7 @@ class SplitVpnService : VpnService() {
 
     private fun runConnection(revision: Long) {
         if (destroyed || !gate.accepts(revision)) return
+        if (power.idle) { requestConnection(revision, 0, "设备唤醒后恢复连接"); return }
         if (network.available == false) { requestConnection(revision, 0, "等待网络"); return }
         retryTask = null
         operationRevision = revision
@@ -220,9 +237,39 @@ class SplitVpnService : VpnService() {
         val previous = power
         power = next
         if (!gate.wanted || destroyed) return
+        if (next.idle) {
+            // A rebuild already running must not acquire/extend work in Doze.
+            synchronized(commandLock) { startupThread?.interrupt() }
+            dataPlaneExecutor.execute {
+                cancelRetry()
+                monitorTask?.cancel(false)
+                monitorTask = null
+                cancelHealthProbe()
+                healthProbePolicy.reset()
+                if (runtime.get().state != RuntimeStatusRepository.STATE_CONNECTED) {
+                    val proxy = SettingsRepository(this).getSelectedProxy()
+                    runtime.markRecovering("设备休眠中，唤醒后自动恢复", proxy)
+                    updateNotification("设备休眠中，唤醒后自动恢复")
+                }
+            }
+            return
+        }
         if (previous.idle && !next.idle) {
-            // Local controller health alone cannot detect stale sockets after Doze.
-            onNetworkChanged(environment?.readNetwork() ?: network, force = true)
+            val currentNetwork = environment?.readNetwork() ?: network
+            if (currentNetwork != network) {
+                onNetworkChanged(currentNetwork)
+            } else {
+                dataPlaneExecutor.execute {
+                    if (!gate.wanted || destroyed) return@execute
+                    healthProbePolicy.reset()
+                    if (runtime.get().state == RuntimeStatusRepository.STATE_CONNECTED) {
+                        scheduleHealthCheck(1_000L)
+                    } else {
+                        recovery.reset()
+                        requestConnection(gate.revision, 0, "设备已唤醒，正在恢复连接")
+                    }
+                }
+            }
             return
         }
         dataPlaneExecutor.execute {
@@ -236,6 +283,8 @@ class SplitVpnService : VpnService() {
         sessionGeneration++
         monitorTask?.cancel(false)
         monitorTask = null
+        cancelHealthProbe()
+        healthProbePolicy.reset()
         val hasDataPlaneResources = startupThread != null ||
             tun2socksPid > 0 ||
             mihomoProcess != null ||
@@ -382,7 +431,7 @@ class SplitVpnService : VpnService() {
         recovery.connected(SystemClock.elapsedRealtime())
         recoveryEvents.finish(operationRecoveryToken)
         operationRecoveryToken = null
-        healthFailures = 0
+        healthProbePolicy.reset()
         updateNotification("轻舟已连接：$selectedProxy")
     }
 
@@ -444,34 +493,113 @@ class SplitVpnService : VpnService() {
             waitForNativeProcessExit(tunPid)
             exited("tun2socks")
         }, "tun2socks-exit").apply { isDaemon = true; start() }
-        scheduleHealthCheck()
+        scheduleHealthCheck(INITIAL_HTTPS_PROBE_DELAY_MS)
     }
 
     private fun scheduleHealthCheck(delayMs: Long = power.healthIntervalMs) {
         monitorTask?.cancel(false)
-        if (destroyed || !gate.wanted) return
+        if (destroyed || !gate.wanted || power.idle) return
         monitorTask = monitorExecutor.schedule({
-            dataPlaneExecutor.execute {
-                if (destroyed || !gate.wanted) return@execute
-                val currentNetwork = environment?.readNetwork() ?: NetworkState.Unknown
-                if (currentNetwork != network) {
-                    mainHandler.post { onNetworkChanged(environment?.readNetwork() ?: NetworkState.Unknown) }
-                } else if (runtime.get().state == RuntimeStatusRepository.STATE_CONNECTED) {
-                    operationRevision = gate.revision
-                    try {
-                        requireDataPlaneAlive()
-                        // A live but hung controller must also be recoverable.
-                        MihomoControllerClient.requireAvailable()
-                        healthFailures = 0
-                    } catch (error: Exception) {
-                        healthFailures++
-                        if (mihomoProcess?.isAlive != true || tun2socksPid <= 0 || healthFailures >= 2)
-                            failDataPlane("VPN 内核健康检查未通过，正在恢复")
+            dataPlaneExecutor.execute(::runHealthCheck)
+        }, delayMs, TimeUnit.MILLISECONDS)
+    }
+
+    /** Runs on the lifecycle queue; all bounded Controller/remote I/O uses [probeExecutor]. */
+    private fun runHealthCheck() {
+        if (destroyed || !gate.wanted || power.idle) return
+        val currentNetwork = environment?.readNetwork() ?: NetworkState.Unknown
+        if (currentNetwork != network) {
+            mainHandler.post { onNetworkChanged(currentNetwork) }
+            return
+        }
+        if (runtime.get().state != RuntimeStatusRepository.STATE_CONNECTED) return
+        if (healthProbeToken != null) return
+
+        operationRevision = gate.revision
+        try {
+            requireDataPlaneAlive()
+        } catch (_: Exception) {
+            failDataPlane("VPN 数据面健康检查未通过，正在恢复")
+            return
+        }
+
+        val selectedProxy = SettingsRepository(this).getSelectedProxy()
+        launchHealthProbe(selectedProxy, shouldProbeVpnEgress(selectedProxy, power))
+    }
+
+    private fun launchHealthProbe(selectedProxy: String, probeVpnEgress: Boolean) {
+        val token = HealthProbeToken(gate.revision, sessionGeneration, network, selectedProxy)
+        healthProbeToken = token
+        try {
+            healthProbeTask = probeExecutor.submit {
+                // Both loopback Controller I/O and remote I/O are bounded, but neither may
+                // delay stop, network-change or process-exit work on the lifecycle queue.
+                val outcome = try {
+                    MihomoControllerClient.requireAvailable()
+                    if (!probeVpnEgress) {
+                        ProbeOutcome.SKIPPED
+                    } else {
+                        try {
+                            MihomoControllerClient.requireVpnHttpsEgress()
+                            ProbeOutcome.HEALTHY
+                        } catch (_: Exception) {
+                            ProbeOutcome.EGRESS_FAILURE
+                        }
                     }
+                } catch (_: Exception) {
+                    ProbeOutcome.CONTROLLER_FAILURE
                 }
+                dataPlaneExecutor.execute { completeHealthProbe(token, outcome) }
+            }
+        } catch (_: RuntimeException) {
+            healthProbeToken = null
+            healthProbeTask = null
+            if (!destroyed && gate.wanted) scheduleHealthCheck()
+        }
+    }
+
+    private fun completeHealthProbe(token: HealthProbeToken, outcome: ProbeOutcome) {
+        if (healthProbeToken != token) return
+        healthProbeToken = null
+        healthProbeTask = null
+        val selectedProxy = SettingsRepository(this).getSelectedProxy()
+        val current = !destroyed &&
+            gate.accepts(token.revision) &&
+            token.matches(gate.revision, sessionGeneration, network, selectedProxy) &&
+            runtime.get().state == RuntimeStatusRepository.STATE_CONNECTED &&
+            !power.idle
+        if (!current) {
+            if (!destroyed && gate.wanted && !power.idle &&
+                runtime.get().state == RuntimeStatusRepository.STATE_CONNECTED) {
                 scheduleHealthCheck()
             }
-        }, delayMs, TimeUnit.MILLISECONDS)
+            return
+        }
+        applyHealthDecision(healthProbePolicy.record(outcome, power))
+    }
+
+    private fun applyHealthDecision(decision: HealthDecision) {
+        when (decision) {
+            HealthDecision.None -> scheduleHealthCheck()
+            is HealthDecision.RetryAfter -> {
+                appendLog("VPN 健康检查暂未通过，将再次确认")
+                scheduleHealthCheck(decision.delayMs)
+            }
+            is HealthDecision.Rebuild -> {
+                operationRevision = gate.revision
+                val message = when (decision.failure) {
+                    ProbeFailureKind.CONTROLLER -> "VPN 本地控制通道连续无响应，正在恢复"
+                    ProbeFailureKind.EGRESS -> "VPN HTTPS 出口连续不可用，正在恢复"
+                }
+                failDataPlane(message)
+            }
+        }
+    }
+
+    private fun cancelHealthProbe() {
+        healthProbeToken = null
+        healthProbeTask?.cancel(true)
+        healthProbeTask = null
     }
 
     private fun applyRunningConfig(config: MihomoConfig) {
@@ -701,6 +829,7 @@ class SplitVpnService : VpnService() {
         private const val CHANNEL_ID = "split_vpn_status"
         private const val NOTIFICATION_ID = 1001
         private const val VPN_MTU = 1500
+        private const val INITIAL_HTTPS_PROBE_DELAY_MS = 5_000L
         private const val CONTROLLER_READY_TIMEOUT_MS = 8_000L
         private const val MIHOMO_STOP_GRACE_MS = 1_000L
         private const val MIHOMO_FORCE_STOP_TIMEOUT_MS = 3_000L

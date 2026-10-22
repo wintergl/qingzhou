@@ -42,9 +42,12 @@ def main():
 
     class Proxy(BaseHTTPRequestHandler):
         def do_GET(self):
-            health = urlsplit(self.path).path == "/health"
+            path = urlsplit(self.path).path
+            health = path == "/health"
             with lock:
                 counts["health" if health else "forward"] += 1
+            if path == "/probe":
+                time.sleep(0.02)  # Keep Mihomo's millisecond delay strictly positive.
             body = b"" if health else b"forwarded"
             self.send_response(204 if health else 200)
             self.send_header("Content-Length", str(len(body)))
@@ -61,9 +64,12 @@ def main():
                 return
             while self.rfile.readline() not in (b"\r\n", b"\n", b""):
                 pass
-            health = urlsplit(request_line[1]).path == "/health"
+            path = urlsplit(request_line[1]).path
+            health = path == "/health"
             with lock:
                 counts["health" if health else "forward"] += 1
+            if path == "/probe":
+                time.sleep(0.02)
             body = b"" if health else b"forwarded"
             status = b"204 No Content" if health else b"200 OK"
             self.wfile.write(b"HTTP/1.1 " + status + b"\r\nContent-Length: " + str(len(body)).encode() + b"\r\nConnection: close\r\n\r\n" + body)
@@ -144,6 +150,20 @@ def main():
                 with lock:
                     return counts["health"]
 
+            def forward_count():
+                with lock:
+                    return counts["forward"]
+
+            def assert_selected_group_delay(expected_selection):
+                before_selection = request("/proxies/VPN")["now"]
+                assert before_selection == expected_selection, before_selection
+                before = forward_count()
+                target = quote("http://198.18.0.10/probe", safe="")
+                delay = request(f"/proxies/VPN/delay?url={target}&timeout=2000&expected=200-599")
+                assert delay["delay"] > 0, delay
+                assert forward_count() == before + 1, "Selected-group delay must make one target request"
+                assert request("/proxies/VPN")["now"] == before_selection, "Delay probe must not change VPN.now"
+
             def reload(selected):
                 nonlocal result
                 result = generate(selected)
@@ -175,6 +195,10 @@ def main():
                     forward()
                     time.sleep(0.55)
                 assert health_count() == before, "Fixed-node forwarding must not trigger periodic group tests"
+                assert_selected_group_delay("fixture-a")
+                after_fixed_probe = health_count()
+                time.sleep(1.2)
+                assert health_count() == after_fixed_probe, "Fixed-node delay probe must not trigger provider tests"
                 request("/providers/proxies/" + quote(subscription) + "/healthcheck")
                 for _ in range(60):
                     if health_count() >= before + 2:
@@ -187,13 +211,16 @@ def main():
                     forward()
                     time.sleep(0.55)
                 assert health_count() >= auto_before + 2, "Automatic selection must restore health checks"
+                assert_selected_group_delay("AUTO")
+                reload("BALANCE")
+                assert_selected_group_delay("BALANCE")
                 reload("fixture-b")
                 time.sleep(0.5)
                 before = health_count()
                 forward()
                 time.sleep(2.2)
                 assert health_count() == before, "Returning to a fixed node must stop group tests again"
-                print(json.dumps({"baseline_health_requests": baseline, "fixed_periodic_requests": 0, "manual_tests": "passed", "automatic_tests": "passed", "fixed_node_switch_and_forwarding": "passed"}))
+                print(json.dumps({"baseline_health_requests": baseline, "fixed_periodic_requests": 0, "manual_tests": "passed", "automatic_tests": "passed", "selected_group_delay": ["fixed", "AUTO", "BALANCE"], "fixed_node_switch_and_forwarding": "passed"}))
     finally:
         if process is not None:
             process.terminate()

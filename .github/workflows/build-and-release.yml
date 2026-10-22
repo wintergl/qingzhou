@@ -95,7 +95,7 @@ jobs:
           python-version: "3.12"
 
       - name: Cache Cargo downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -154,7 +154,7 @@ jobs:
           cache: false
 
       - name: Cache Cargo downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -196,7 +196,7 @@ jobs:
             --output "${output}/qingzhou-${VERSION}-${PLATFORM}-source.tar.gz"
 
       - name: Upload short-lived macOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qingzhou-${{ needs.metadata.outputs.version }}-${{ matrix.platform }}
           path: |
@@ -232,7 +232,7 @@ jobs:
           cache: false
 
       - name: Cache Cargo downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -266,7 +266,7 @@ jobs:
             --output "${SPLITVPN_WINDOWS_RELEASE_DIR}/qingzhou-${VERSION}-windows-x64-source.tar.gz"
 
       - name: Upload short-lived Windows artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qingzhou-${{ needs.metadata.outputs.version }}-windows-x64
           path: |
@@ -308,7 +308,7 @@ jobs:
           cache: false
 
       - name: Cache Cargo downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -317,7 +317,11 @@ jobs:
 
       - name: Install Android and Rust targets
         run: |
-          sdkmanager \
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          test -n "${sdk_root}"
+          sdkmanager="${sdk_root}/cmdline-tools/latest/bin/sdkmanager"
+          test -x "${sdkmanager}"
+          "${sdkmanager}" \
             "platforms;android-${{ needs.metadata.outputs.android_api }}" \
             "build-tools;${{ needs.metadata.outputs.android_api }}.0.0" \
             "ndk;${{ needs.metadata.outputs.android_ndk }}" \
@@ -343,7 +347,7 @@ jobs:
           cp "${apk}" "release/ci/android-arm64/qingzhou-${VERSION}-android-arm64-debug.apk"
 
       - name: Upload short-lived Android artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qingzhou-${{ needs.metadata.outputs.version }}-android-arm64
           path: |
@@ -374,7 +378,7 @@ jobs:
           cache: false
 
       - name: Cache Cargo downloads
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -401,7 +405,21 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import os
           import shutil
+          import stat
+
+          def remove_rebuildable_tree(path):
+              if not path.exists():
+                  return
+              for root, directories, files in os.walk(path):
+                  root = Path(root)
+                  root.chmod(root.stat().st_mode | stat.S_IWUSR)
+                  for name in directories + files:
+                      entry = root / name
+                      if not entry.is_symlink():
+                          entry.chmod(entry.stat().st_mode | stat.S_IWUSR)
+              shutil.rmtree(path)
 
           for name in (
               "packages/vpn-core/target",
@@ -411,8 +429,7 @@ jobs:
               "apps/iphone/ThirdParty/sing-box-src",
           ):
               path = Path(name)
-              if path.exists():
-                  shutil.rmtree(path)
+              remove_rebuildable_tree(path)
           PY
           df -h .
 
@@ -439,7 +456,7 @@ jobs:
             "${app}" "release/ci/ios/qingzhou-${VERSION}-ios-simulator-unsigned.zip"
 
       - name: Upload short-lived iOS artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: qingzhou-${{ needs.metadata.outputs.version }}-ios-simulator
           path: |
@@ -465,7 +482,7 @@ jobs:
       contents: write
     steps:
       - name: Download all platform artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: qingzhou-${{ needs.metadata.outputs.version }}-*
           path: release/assets

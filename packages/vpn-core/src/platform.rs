@@ -2,9 +2,11 @@
 use crate::storage::{Storage, atomic_write};
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
+#[cfg(target_os = "macos")]
+use std::io::Write;
 use std::{
     fs,
-    io::{Read, Write},
+    io::Read,
     path::Path,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -400,6 +402,7 @@ impl HelperState {
             || (matches!(self, Self::Current | Self::Outdated)
                 && matches!(action, "start" | "stop" | "status" | "restore-orphan-dns"))
     }
+    #[cfg(target_os = "macos")]
     fn message(&self) -> &'static str {
         match self {
             Self::Outdated => "特权服务需要更新；连接或切换节点时会自动请求系统授权。",

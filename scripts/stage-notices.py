@@ -35,7 +35,10 @@ def rust_notices(output, platform):
               'windows-x64': 'x86_64-pc-windows-gnu', 'android-arm64': 'aarch64-linux-android',
               'ios': 'aarch64-apple-ios'}[platform]
     raw = subprocess.check_output([
-        'cargo', 'metadata', '--offline', '--locked', '--format-version=1',
+        # A clean builder may not have downloaded manifests for test-only crates.
+        # --locked keeps the resolved versions/checksums fixed while allowing
+        # Cargo to fill that local metadata cache before notices are collected.
+        'cargo', 'metadata', '--locked', '--format-version=1',
         '--filter-platform', target,
         '--manifest-path', str(ROOT / 'packages/vpn-core/Cargo.toml')], cwd=ROOT)
     metadata = json.loads(raw)

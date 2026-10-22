@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import tempfile
 
 from third_party_common import LOCAL, ROOT, go_environment, load_lock, sha256
 
@@ -17,6 +18,90 @@ SELECTION = {
     'android-arm64': ['mihomo_android', 'tun2socks', 'meta_rules'],
     'ios': ['sing_box', 'sing_geosite', 'sing_geoip'],
 }
+
+
+def read_prebuilt_inventory(directory, platform):
+    """Validate a complete notice tree before it is copied into an app."""
+    directory = Path(directory)
+    if not directory.is_absolute():
+        raise ValueError('Prebuilt notices must use an absolute path.')
+    if directory.is_symlink() or not directory.is_dir():
+        raise ValueError('Prebuilt notices must be a real directory.')
+    for path in directory.rglob('*'):
+        if path.is_symlink():
+            raise ValueError('Prebuilt notices must not contain symbolic links.')
+    marker = directory / 'dependency-inventory.json'
+    if not marker.is_file():
+        raise ValueError('Prebuilt notices are missing dependency-inventory.json.')
+    try:
+        inventory = json.loads(marker.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError('Prebuilt notice inventory is not valid JSON.') from error
+    if inventory.get('platform') != platform:
+        raise ValueError('Prebuilt notices are for a different platform.')
+    if inventory.get('status') == 'preparing':
+        raise ValueError('Prebuilt notices are incomplete.')
+    components = inventory.get('components')
+    if not isinstance(components, dict) or set(components) != set(SELECTION[platform]):
+        raise ValueError('Prebuilt notices do not contain the expected components.')
+    if not isinstance(inventory.get('rust_packages'), list) or not inventory['rust_packages']:
+        raise ValueError('Prebuilt notices do not contain a Rust dependency inventory.')
+    if not isinstance(inventory.get('go_modules'), dict):
+        raise ValueError('Prebuilt notices do not contain a Go dependency inventory.')
+    if platform == 'ios' and not isinstance(inventory['go_modules'].get('sing_box'), list):
+        raise ValueError('Prebuilt iOS notices do not contain the sing-box dependency inventory.')
+    if not isinstance(inventory.get('geo_data'), dict):
+        raise ValueError('Prebuilt notices do not contain a Geo data inventory.')
+    required = [directory / f'{key}.LICENSE' for key in SELECTION[platform]]
+    required += [directory / 'Qingzhou-Original-Code.LICENSE', directory / 'LICENSES.md']
+    if any(not path.is_file() for path in required):
+        raise ValueError('Prebuilt notices are missing required license documents.')
+    return inventory
+
+
+def copy_prebuilt_notices(source, output, platform):
+    """Replace an owned output with a verified, already generated notice tree."""
+    source = Path(source)
+    output = Path(output)
+    if output.is_symlink():
+        raise ValueError('Notice output must not be a symbolic link.')
+    read_prebuilt_inventory(source, platform)
+    source = source.resolve()
+    output = output.resolve()
+    if source == output or source in output.parents or output in source.parents:
+        raise ValueError('Prebuilt notice source and output must not overlap.')
+    if output.exists():
+        if not output.is_dir():
+            raise ValueError('Notice output must be a directory.')
+        if any(output.iterdir()):
+            marker = output / 'dependency-inventory.json'
+            if marker.is_symlink() or not marker.is_file():
+                raise ValueError('Refusing to replace an unowned notice directory.')
+            try:
+                current = json.loads(marker.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ValueError('Refusing to replace an unowned notice directory.') from error
+            if current.get('platform') != platform:
+                raise ValueError('Refusing to replace notices for a different platform.')
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f'.{output.name}.copy-', dir=output.parent) as temporary:
+        staged = Path(temporary) / output.name
+        shutil.copytree(source, staged)
+        read_prebuilt_inventory(staged.resolve(), platform)
+        previous = None
+        if output.exists():
+            previous = Path(tempfile.mkdtemp(prefix=f'.{output.name}.previous-', dir=output.parent))
+            output.rename(previous / output.name)
+        try:
+            staged.rename(output)
+        except Exception:
+            if previous is not None and not output.exists():
+                (previous / output.name).rename(output)
+                previous.rmdir()
+            raise
+        if previous is not None:
+            shutil.rmtree(previous)
+    print(f'Copied verified {platform} notices from {source}.')
 
 
 def copy_licenses(directory, output):
@@ -141,11 +226,16 @@ def go_notices(output, platform):
     return result
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--platform', required=True, choices=SELECTION)
     parser.add_argument('--output', required=True, type=Path)
-    args = parser.parse_args()
+    parser.add_argument('--copy-from', type=Path,
+                        help='Copy a complete prebuilt notice tree instead of regenerating it.')
+    args = parser.parse_args(argv)
+    if args.copy_from:
+        copy_prebuilt_notices(args.copy_from, args.output, args.platform)
+        return
     output = args.output.resolve()
     marker = output / 'dependency-inventory.json'
     if output.exists() and any(output.iterdir()) and not marker.is_file():

@@ -358,7 +358,7 @@
 			outputPaths = ();
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\npython3 \"$SRCROOT/../../scripts/stage-notices.py\" --platform ios --output \"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/third-party-licenses\"\n";
+			shellScript = "set -eu\nexport PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\noutput=\"$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/third-party-licenses\"\nscript=\"$SRCROOT/../../scripts/stage-notices.py\"\nif [ -n \"${SPLITVPN_PREBUILT_NOTICES_DIR:-}\" ]; then\n  python3 \"$script\" --platform ios --output \"$output\" --copy-from \"$SPLITVPN_PREBUILT_NOTICES_DIR\"\nelse\n  python3 \"$script\" --platform ios --output \"$output\"\nfi\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

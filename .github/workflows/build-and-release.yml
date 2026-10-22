@@ -393,6 +393,7 @@ jobs:
 
       - name: Prepare pinned frameworks and corresponding source
         env:
+          SPLITVPN_PREBUILT_NOTICES_DIR: ${{ runner.temp }}/qingzhou-ios-notices-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           df -h .
@@ -400,6 +401,10 @@ jobs:
           python3 scripts/export-corresponding-source.py \
             --platform ios \
             --output "release/ci/ios/qingzhou-${VERSION}-ios-source.tar.gz"
+          test ! -e "${SPLITVPN_PREBUILT_NOTICES_DIR}"
+          python3 scripts/stage-notices.py \
+            --platform ios \
+            --output "${SPLITVPN_PREBUILT_NOTICES_DIR}"
 
       - name: Reclaim rebuildable caches before Xcode
         run: |
@@ -435,9 +440,11 @@ jobs:
 
       - name: Build the unsigned Simulator app
         env:
+          SPLITVPN_PREBUILT_NOTICES_DIR: ${{ runner.temp }}/qingzhou-ios-notices-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
           VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           derived="${RUNNER_TEMP}/qingzhou-ios-derived-data"
+          test -s "${SPLITVPN_PREBUILT_NOTICES_DIR}/dependency-inventory.json"
           xcodebuild \
             -project apps/iphone/SplitVpn.xcodeproj \
             -scheme SplitVpnIphone \
@@ -445,6 +452,7 @@ jobs:
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath "${derived}" \
+            SPLITVPN_PREBUILT_NOTICES_DIR="${SPLITVPN_PREBUILT_NOTICES_DIR}" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             build
@@ -452,6 +460,7 @@ jobs:
           test -n "${app}"
           test ! -e "${app}/_CodeSignature"
           test "$(plutil -extract CFBundleShortVersionString raw -o - "${app}/Info.plist")" = "${VERSION}"
+          diff -qr "${SPLITVPN_PREBUILT_NOTICES_DIR}" "${app}/third-party-licenses"
           ditto -c -k --sequesterRsrc --keepParent \
             "${app}" "release/ci/ios/qingzhou-${VERSION}-ios-simulator-unsigned.zip"
 

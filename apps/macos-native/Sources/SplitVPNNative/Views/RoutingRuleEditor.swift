@@ -40,11 +40,11 @@ struct RoutingRuleEditor: View {
                     Label("\(normalized.matchTitle)：\(normalized.value) → \(draft.outlet.title)", systemImage: "checkmark.circle")
                         .foregroundStyle(.primary).textSelection(.enabled)
                 } else if let inputError {
-                    Label(inputError, systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                    Label(inputError, systemImage: "exclamationmark.circle").foregroundStyle(VPNTheme.destructive)
                 } else {
                     Text(draft.address.isEmpty ? "填写后会显示匹配范围。" : "正在检查地址…").foregroundStyle(.secondary)
                 }
-                if let saveError { Text(saveError).foregroundStyle(.red) }
+                if let saveError { Text(saveError).foregroundStyle(VPNTheme.destructive) }
             }.font(.callout).fixedSize(horizontal: false, vertical: true).frame(minHeight: 42, alignment: .topLeading)
             Text("每条规则填一个地址。相同规则改出口会替换原设置；不同范围重叠时直连优先。局域网、Tailscale 与私有网络仍按接入设置处理。")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

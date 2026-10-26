@@ -26,6 +26,34 @@ class HealthProbePolicyTest {
             policy.record(ProbeOutcome.EGRESS_FAILURE, active))
     }
 
+    @Test fun dnsNeedsThreeConsecutiveFailuresAndStaysSeparateFromTls() {
+        val policy = HealthProbePolicy()
+        repeat(2) {
+            assertEquals(HealthDecision.RetryAfter(5_000L), policy.record(ProbeOutcome.DNS_FAILURE, active))
+        }
+        assertEquals(HealthDecision.Rebuild(ProbeFailureKind.DNS), policy.record(ProbeOutcome.DNS_FAILURE, active))
+        policy.reset()
+        assertEquals(HealthDecision.RetryAfter(5_000L), policy.record(ProbeOutcome.EGRESS_FAILURE, active))
+        assertEquals(0, policy.dnsFailures)
+        assertEquals(1, policy.egressFailures)
+        policy.record(ProbeOutcome.DNS_FAILURE, active)
+        assertEquals(0, policy.egressFailures)
+        assertEquals(1, policy.dnsFailures)
+        policy.record(ProbeOutcome.HEALTHY, active)
+        assertEquals(0, policy.dnsFailures)
+    }
+
+    @Test fun alternatingDnsAndTlsFailuresStillRebuildTheApplicationPath() {
+        val policy = HealthProbePolicy()
+        assertEquals(HealthDecision.RetryAfter(5_000L), policy.record(ProbeOutcome.DNS_FAILURE, active))
+        assertEquals(HealthDecision.RetryAfter(5_000L), policy.record(ProbeOutcome.EGRESS_FAILURE, active))
+        assertEquals(HealthDecision.Rebuild(ProbeFailureKind.DNS), policy.record(ProbeOutcome.DNS_FAILURE, active))
+        policy.reset()
+        assertEquals(HealthDecision.RetryAfter(5_000L), policy.record(ProbeOutcome.EGRESS_FAILURE, active))
+        assertEquals(HealthDecision.RetryAfter(5_000L), policy.record(ProbeOutcome.DNS_FAILURE, active))
+        assertEquals(HealthDecision.Rebuild(ProbeFailureKind.EGRESS), policy.record(ProbeOutcome.EGRESS_FAILURE, active))
+    }
+
     @Test fun healthyAndSkippedOutcomesResetBothFailureStreaks() {
         for (reset in listOf(ProbeOutcome.HEALTHY, ProbeOutcome.SKIPPED)) {
             val policy = HealthProbePolicy()

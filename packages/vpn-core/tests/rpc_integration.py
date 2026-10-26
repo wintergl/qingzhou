@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 
 ROOT = Path(__file__).resolve().parents[3]
 BINARY = Path(os.environ.get("SPLITVPN_CORE_BINARY", ROOT / "packages/vpn-core/target/debug/splitvpn-core"))
@@ -52,7 +52,11 @@ class Controller(http.server.BaseHTTPRequestHandler):
             proxies["VPN"] = {"type": "Selector", "now": state["selected"], "all": ["DIRECT", "node-a", "node-b"]}
             self.respond({"proxies": proxies})
         elif path.startswith("/proxies/") and path.endswith("/delay"):
-            self.respond({"delay": 27})
+            state.setdefault("delay_urls", []).append(parse_qs(urlsplit(self.path).query).get("url", [""])[0])
+            if state.get("delay_timeout"):
+                self.respond({"message": "Timeout"}, 504)
+            else:
+                self.respond({"delay": 27})
         elif path.startswith("/proxies/"):
             name = path.split("/")[-1]
             if state["proxy_failure"]:
@@ -74,7 +78,7 @@ class Controller(http.server.BaseHTTPRequestHandler):
             else:
                 self.respond({"proxies": [{"name": n, "type": "http", "server": "127.0.0.1", "port": 9, "udp": False} for n in ["node-a", "node-b"]]}, state["subscription_status"])
         elif path == "/health":
-            self.respond({"ok": True})
+            self.respond({"ok": True}, state.get("health_status", 200))
         elif path == "/chatgpt":
             self.respond({"ok": True}, state["chatgpt_status"])
         else:
@@ -283,6 +287,54 @@ class RuntimeTests(unittest.TestCase):
                 break
             self.rpc.events.append(reply)
 
+    def wait_traffic_sample(self):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            traffic = self.rpc.request("traffic:get-monitor")
+            if traffic["snapshot"] is not None:
+                return traffic
+            time.sleep(0.05)
+        self.fail("background traffic sample missing")
+
+    def test_slow_latency_does_not_block_bootstrap_or_stop_and_cannot_commit(self):
+        entered, release = threading.Event(), threading.Event()
+        self.server.state.update(blocked_path="/proxies/node-a/delay", download_entered=entered, download_release=release)
+        self.rpc.process.stdin.write(json.dumps({"id": "slow-latency", "channel": "nodes:test", "payload": {"nodeName": "node-a"}}) + "\n")
+        self.rpc.process.stdin.flush()
+        self.assertTrue(entered.wait(5), "latency fixture was not reached")
+        try:
+            started = time.monotonic()
+            self.assertEqual(self.rpc.request("native:bootstrap")["status"]["mihomo"]["state"], "running")
+            stopped = self.rpc.request("vpn:stop", ok=False)
+            self.assertIn("未停止其他内核", stopped["message"])
+            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertFalse(release.is_set())
+        finally:
+            release.set()
+        while True:
+            reply = self.rpc.lines.get(timeout=5)
+            if reply.get("id") == "slow-latency":
+                self.assertTrue(reply["ok"], reply)
+                self.assertEqual(reply["data"]["status"], "runtime-changed")
+                break
+            self.rpc.events.append(reply)
+        self.assertFalse((self.data / "runtime-state/speed-cache.json").exists())
+
+    def test_slow_controller_sample_does_not_block_cached_reads_or_stop(self):
+        entered, release = threading.Event(), threading.Event()
+        self.server.state.update(blocked_path="/connections", download_entered=entered, download_release=release)
+        self.assertTrue(entered.wait(5), "background sampler did not reach controller")
+        try:
+            started = time.monotonic()
+            self.rpc.request("native:bootstrap")
+            self.rpc.request("vpn:get-status")
+            self.rpc.request("traffic:get-monitor")
+            self.rpc.request("vpn:stop", ok=False)
+            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertFalse(release.is_set())
+        finally:
+            release.set()
+
     def test_connectivity_requires_system_dns_and_chatgpt_http(self):
         result = self.rpc.request("connectivity:check")["connectivity"]
         self.assertTrue(result["foreignOk"])
@@ -296,6 +348,44 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(blocked["systemDns"]["ok"])
         self.assertEqual(blocked["chatgpt"]["httpStatus"], 403)
         self.assertIn("403", blocked["error"])
+
+    def test_manual_check_updates_shared_schedule_and_time_without_shape_breakage(self):
+        result = self.rpc.request("connectivity:check")
+        self.assertIn("connectivity", result)
+        state = self.rpc.request("diagnostics:get-state")
+        record = state["connectivity"]
+        self.assertEqual(record["state"], "ready")
+        self.assertEqual(record["source"], "manual")
+        self.assertTrue(record["checkedAt"])
+        self.assertEqual(record["result"]["connectivity"], result["connectivity"])
+        self.assertEqual(record["intervalSeconds"], 300)
+
+    def test_recommended_latency_uses_three_distinct_targets(self):
+        result = self.rpc.request("nodes:test-recommended", {"identityKey": "v1:one:node-a"})
+        self.assertEqual(len(set(self.server.state["delay_urls"])), 3)
+        self.assertEqual(len(result["samples"]), 3)
+        self.assertEqual(result["status"], "available")
+
+    def test_website_restriction_is_not_reported_as_a_connection_timeout(self):
+        self.server.state["health_status"] = 403
+        result = self.rpc.request("connectivity:test-website-speeds")
+        self.assertTrue(result["checkedAt"])
+        self.assertEqual(len(result["results"]), 3)
+        for site in result["results"]:
+            self.assertEqual(site["httpStatus"], 403)
+            self.assertEqual(site["failureReason"], "restricted")
+        state = self.rpc.request("diagnostics:get-state")
+        self.assertEqual(state["websites"]["state"], "ready")
+        self.assertTrue(state["websites"]["checkedAt"])
+
+    def test_timeout_is_not_zero_latency_and_includes_a_timestamp(self):
+        self.server.state["delay_timeout"] = True
+        result = self.rpc.request("nodes:test", {"nodeName": "node-a"})
+        self.assertEqual(result["status"], "timeout")
+        node = next(n for n in self.rpc.request("nodes:list") if n["name"] == "node-a")
+        self.assertIsNone(node["delay"])
+        self.assertEqual(node["latencyStatus"], "timeout")
+        self.assertTrue(node["latencyCheckedAt"])
 
     def test_proxy_success_cannot_mask_real_process_dns_mismatch(self):
         self.rpc.close()
@@ -355,7 +445,7 @@ class RuntimeTests(unittest.TestCase):
         before = self.rpc.request("vpn:get-status")["mihomo"]["pid"]
         self.rpc.request("subscription:update", {"id": "one"})
         self.assertEqual(self.rpc.request("vpn:get-status")["mihomo"]["pid"], before)
-        self.assertEqual(self.rpc.request("traffic:get-monitor")["snapshot"]["connections"][0]["id"], "kept-company-connection")
+        self.assertEqual(self.wait_traffic_sample()["snapshot"]["connections"][0]["id"], "kept-company-connection")
         self.assertTrue(self.server.state["reloads"])
         self.assertFalse(any(method == "DELETE" for method, _ in self.server.state["requests"]))
 
@@ -480,9 +570,11 @@ class RuntimeTests(unittest.TestCase):
 
     def test_udp_runtime_flag_overrides_provider_flag_without_probe(self):
         count = len(self.server.state["selections"])
+        probes = len(self.server.state["probes"])
         result = self.rpc.request("nodes:test-udp", {"nodeName": "node-a"})
         self.assertFalse(result["supported"])
         self.assertEqual(len(self.server.state["selections"]), count)
+        self.assertEqual(len(self.server.state["probes"]), probes)
 
     def test_company_transport_error_retains_recovery_journal(self):
         state = self.rpc.request("native:company-apply", {"port": 1080, "helperPid": os.getpid(), "rows": [{"address": "10.20.0.0/24", "ports": "443", "network": "tcp"}]})
@@ -507,7 +599,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.server.state["selected"], "node-b")
         self.assertEqual(len(self.server.state["reloads"]), 2)
         self.assertFalse(self.rpc.request("native:bootstrap")["companyRouting"]["active"])
-        self.assertEqual(self.rpc.request("traffic:get-monitor")["snapshot"]["connections"][0]["id"], "kept-company-connection")
+        self.assertEqual(self.wait_traffic_sample()["snapshot"]["connections"][0]["id"], "kept-company-connection")
 
     def test_existing_company_proxy_cannot_hide_a_failed_tun(self):
         state = self.rpc.request("native:company-apply", {"port": 1080, "helperPid": os.getpid(), "rows": [{"address": "10.0.0.0/24", "ports": "443", "network": "tcp"}]})

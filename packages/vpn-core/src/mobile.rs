@@ -40,6 +40,11 @@ const SETTINGS_KEYS: &[&str] = &[
 /// Serializes read-modify-write cycles on the shared data directory.
 static LOCK: Mutex<()> = Mutex::new(());
 
+// Android's userspace bridge forwards this virtual server through SOCKS; the
+// DNS outbound handles both UDP and TCP inside Mihomo without binding port 53.
+const ANDROID_DNS_SERVER: &str = "172.19.0.2";
+const ANDROID_DNS_OUTBOUND: &str = "__QZ_ANDROID_DNS__";
+
 fn string<'a>(p: &'a Value, k: &str) -> Result<&'a str> {
     p[k].as_str()
         .filter(|s| !s.is_empty())
@@ -170,6 +175,28 @@ fn mihomo(store: &Storage, p: &Value) -> Result<Value> {
                 && !n["identityAmbiguous"].as_bool().unwrap_or(false)
         });
     let mut c = config::build(store, &settings, mixed, controller, None, udp)?;
+    let mut dns_outbound = ANDROID_DNS_OUTBOUND.to_owned();
+    let mut suffix = 0;
+    while nodes.iter().any(|node| node["name"] == dns_outbound)
+        || c["proxy-groups"]
+            .as_array()
+            .is_some_and(|groups| groups.iter().any(|group| group["name"] == dns_outbound))
+    {
+        suffix += 1;
+        dns_outbound = format!("{ANDROID_DNS_OUTBOUND}{suffix}");
+    }
+    c["proxies"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name":dns_outbound,"type":"dns"}));
+    // Keep the virtual DNS endpoint ahead of LAN/direct and user rules. This
+    // does not redirect explicitly addressed private/company DNS servers.
+    c["rules"].as_array_mut().unwrap().insert(
+        0,
+        json!(format!(
+            "AND,((IP-CIDR,{ANDROID_DNS_SERVER}/32,no-resolve),(DST-PORT,53)),{dns_outbound}"
+        )),
+    );
     // Geodata ships in the APK, and an app process cannot bind :53.
     c["geo-auto-update"] = json!(false);
     // Android must not continuously probe an unused subscription/group. Keep

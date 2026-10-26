@@ -11,18 +11,18 @@ struct NodeGroupsView: View {
         return store.providerNodes.first { $0.identityKey == identity && $0.identityAmbiguous != true }
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             PageHeader(title: "节点组", subtitle: "整理节点与批量测速，选择具体节点作为出口")
             HStack {
-                Button { editing = NodeGroup(id: UUID().uuidString, name: "", nodeNames: [], members: [], strategy: "manual") } label: { Label("新增节点组", systemImage: "plus") }.disabled(!store.canMutate)
+                Button { editing = NodeGroup(id: UUID().uuidString, name: "", nodeNames: [], members: [], strategy: "manual") } label: { Label("新增节点组", systemImage: "plus") }.buttonStyle(VPNButtonStyle(prominent: true)).disabled(!store.canMutate)
                 Spacer(); Text("\(store.groups.count) 个节点组").foregroundStyle(.secondary)
             }
             HSplitView {
                 List(store.groups, selection: $selectedID) { item in
                     VStack(alignment: .leading, spacing: 5) {
                         Text(item.group.name).fontWeight(.medium)
-                        Text("\(item.isSubscriptionGroup ? "订阅自动维护" : "自定义分组") · \(item.members.count) 个成员").font(.system(size: 13)).foregroundStyle(.secondary)
-                    }.padding(.vertical, 12).tag(item.id)
+                        Text("\(item.isSubscriptionGroup ? "订阅自动维护" : "自定义分组") · \(item.members.count) 个成员").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }.padding(.vertical, 8).tag(item.id)
                 }.frame(minWidth: 180, idealWidth: 220, maxWidth: 260)
                 VStack(alignment: .leading, spacing: 22) {
                     if let item = selected {
@@ -34,7 +34,7 @@ struct NodeGroupsView: View {
                             TableColumn("成员") { Text($0.lastKnownName).padding(.vertical, 10) }
                             TableColumn("状态") { member in Text(member.issue ?? member.available.map { $0 ? "可用" : "失败" } ?? "未检测") }.width(90)
                             TableColumn("延迟") { member in Text(member.delay.map { "\(Int($0)) ms" } ?? "—") }.width(85)
-                            TableColumn("当前") { member in if member.lastKnownName == store.selectedProxy { Image(systemName: "checkmark").foregroundStyle(.green) } }.width(50)
+                            TableColumn("当前") { member in if member.lastKnownName == store.selectedProxy { Image(systemName: "checkmark").foregroundStyle(VPNTheme.green) } }.width(50)
                         }.tableCard()
                         HStack {
                             Button("使用选中节点") { if let node = selectedNode { store.select(node) } }

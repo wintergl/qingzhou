@@ -7,9 +7,20 @@ pub struct RuntimeEnvironment {
     pub sleeping: bool,
     pub low_power: bool,
     pub network_events: bool,
+    /// None keeps clients that predate visibility reporting compatible.
+    pub visible: Option<bool>,
 }
 
 impl RuntimeEnvironment {
+    pub fn sample_interval(&self) -> Duration {
+        Duration::from_secs(if self.visible == Some(false) {
+            30
+        } else if self.low_power {
+            15
+        } else {
+            5
+        })
+    }
     pub fn maintenance_interval(&self, active: bool, recovering: bool) -> Duration {
         Duration::from_secs(if self.sleeping || !active {
             60
@@ -76,5 +87,14 @@ mod tests {
             policy.maintenance_interval(true, true),
             Duration::from_secs(60)
         );
+    }
+    #[test]
+    fn hidden_and_low_power_windows_do_not_sample_connections_at_foreground_rate() {
+        let mut policy = RuntimeEnvironment::default();
+        assert_eq!(policy.sample_interval(), Duration::from_secs(5));
+        policy.low_power = true;
+        assert_eq!(policy.sample_interval(), Duration::from_secs(15));
+        policy.visible = Some(false);
+        assert_eq!(policy.sample_interval(), Duration::from_secs(30));
     }
 }

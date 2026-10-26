@@ -480,7 +480,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 0.6.5;
+				MARKETING_VERSION = 0.6.9;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "split-vpn";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -503,7 +503,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 0.6.5;
+				MARKETING_VERSION = 0.6.9;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "split-vpn";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -526,7 +526,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PacketTunnel/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
-				MARKETING_VERSION = 0.6.5;
+				MARKETING_VERSION = 0.6.9;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_PACKET_TUNNEL_BUNDLE_ID)";
 				PRODUCT_NAME = SplitVpnPacketTunnel;
 				SKIP_INSTALL = YES;
@@ -549,7 +549,7 @@
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PacketTunnel/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
-				MARKETING_VERSION = 0.6.5;
+				MARKETING_VERSION = 0.6.9;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_PACKET_TUNNEL_BUNDLE_ID)";
 				PRODUCT_NAME = SplitVpnPacketTunnel;
 				SKIP_INSTALL = YES;

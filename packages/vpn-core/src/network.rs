@@ -3,6 +3,51 @@ use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
 use std::{net::Ipv4Addr, time::Duration};
 
+/// Automatic repair only needs evidence that the OS resolver works. Comparing
+/// CDN answers from two separate queries can incorrectly classify healthy DNS.
+/// Both targets and every subprocess are bounded; no resolver worker is leaked.
+pub fn automatic_dns_health() -> bool {
+    for host in ["www.gstatic.com", "www.apple.com"] {
+        let result = if cfg!(target_os = "macos") {
+            platform::command(
+                "/usr/bin/dscacheutil",
+                &["-q", "host", "-a", "name", host],
+                Duration::from_secs(4),
+            )
+            .map(|text| {
+                text.lines().any(|line| {
+                    line.trim()
+                        .strip_prefix("ip_address: ")
+                        .or_else(|| line.trim().strip_prefix("ipv6_address: "))
+                        .is_some_and(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+                })
+            })
+        } else if cfg!(windows) {
+            let script = format!(
+                "[System.Net.Dns]::GetHostAddresses('{host}') | ForEach-Object {{ $_.IPAddressToString }}"
+            );
+            platform::command(
+                "powershell.exe",
+                &["-NoProfile", "-NonInteractive", "-Command", &script],
+                Duration::from_secs(4),
+            )
+            .map(|text| {
+                text.lines()
+                    .any(|ip| ip.trim().parse::<std::net::IpAddr>().is_ok())
+            })
+        } else {
+            platform::command("getent", &["ahosts", host], Duration::from_secs(4)).map(|text| {
+                text.split_whitespace()
+                    .any(|ip| ip.parse::<std::net::IpAddr>().is_ok())
+            })
+        };
+        if result.unwrap_or(false) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn dns_evidence(system: Result<Vec<String>>, vpn: Option<Result<Vec<String>>>) -> Value {
     let result = (|| {
         let addresses = system?;
@@ -22,6 +67,9 @@ pub fn dns_evidence(system: Result<Vec<String>>, vpn: Option<Result<Vec<String>>
 pub fn system_dns(isolated: bool, tun: bool) -> Value {
     let system = if isolated {
         fixture_addresses("SPLITVPN_TEST_SYSTEM_DNS_ADDRESSES")
+    } else if cfg!(windows) {
+        platform::command("powershell.exe", &["-NoProfile", "-NonInteractive", "-Command", "[System.Net.Dns]::GetHostAddresses('chatgpt.com') | ForEach-Object { $_.IPAddressToString }"], Duration::from_secs(6))
+            .map(|text| text.lines().filter_map(|ip| ip.trim().parse::<Ipv4Addr>().ok()).map(|ip| ip.to_string()).collect())
     } else if !cfg!(target_os = "macos") {
         // getaddrinfo goes through the OS resolver, as browsers do.
         use std::net::ToSocketAddrs;

@@ -19,15 +19,74 @@ final class LayoutPreviewTests: XCTestCase {
             subscription: SubscriptionRecord(nodeCount: 117, status: "ready", updatedAt: stamp, entries: []),
             settings: VPNSettings(launchAtLogin: false, unknownTraffic: "direct", tun: true, ipv6: false, lanDirect: true, tailscaleDirect: true,
                 specialCompatibilityRules: CompatibilityRules(mailMasterProxy8081: false, wechatImageSendFallback: false), selectedProxy: "日本 东京 · 示例节点", vpnDomainRules: ["DOMAIN-SUFFIX,example.test", "IP-CIDR,203.0.113.8/32"], favoriteNodeNames: ["示例节点"], nodeGroups: [], directDomainRules: ["DOMAIN,api.example.test", "IP-CIDR,192.0.2.0/24"]))
-        let nodes = [VPNNode(name: "日本 东京 · 示例节点", type: "ss", selected: true, delay: 35, available: true, identityKey: "fixture-jp", subscriptionId: "fixture-sub", subscriptionName: "示例订阅", identityAmbiguous: false, location: NodeLocation(country: "日本", city: "东京", source: "name-recognized")),
+        var nodes = [VPNNode(name: "日本 东京 · 示例节点", type: "ss", selected: true, delay: 35, available: true, identityKey: "fixture-jp", subscriptionId: "fixture-sub", subscriptionName: "示例订阅", identityAmbiguous: false, location: NodeLocation(country: "日本", city: "东京", source: "name-recognized")),
                      VPNNode(name: "美国 洛杉矶 · 示例节点", type: "trojan", selected: false, delay: 150, available: true, identityKey: "fixture-us", subscriptionId: "fixture-sub", subscriptionName: "示例订阅", identityAmbiguous: false, location: NodeLocation(country: "美国", city: "洛杉矶", source: "name-recognized"))]
+        let fresh = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-92))
+        let later = ISO8601DateFormatter().string(from: Date().addingTimeInterval(208))
+        let siteNext = ISO8601DateFormatter().string(from: Date().addingTimeInterval(808))
+        nodes[0].latencyStatus = "available"; nodes[0].latencyCheckedAt = fresh; nodes[0].latencySource = "engine"
+        nodes[1].latencyStatus = "available"; nodes[1].latencyCheckedAt = fresh; nodes[1].latencySource = "manual"
+        for (i, name, state, delay) in [
+            (2, "新加坡 · 滨海", "available", 128.0),
+            (3, "美国 洛杉矶 · 西海岸", "timeout", 0.0),
+            (4, "美国 洛杉矶 · 太平洋", "failed", 0.0),
+            (5, "日本 大阪 · 备用线路", "stale", 76.0),
+            (6, "德国 法兰克福 · 示例节点", "untested", 0.0),
+            (7, "英国 伦敦 · 示例节点", "testing", 0.0)
+        ] {
+            var node = nodes[0]; node.name = name; node.identityKey = "fixture-\(i)"; node.selected = false
+            node.latencyStatus = state; node.delay = delay > 0 ? delay : nil
+            node.available = state == "available" ? true : state == "timeout" || state == "failed" ? false : nil
+            node.latencyCheckedAt = state == "untested" || state == "testing" ? nil : fresh
+            node.latencyFailure = state == "timeout" ? "timeout" : nil
+            node.location = nil; nodes.append(node)
+        }
         let risks = [NodeRisk(nodeName: nodes[0].name, ip: "203.0.113.1", riskLevel: "low", reasons: ["fixture"], checkedAt: stamp),
                      NodeRisk(nodeName: nodes[1].name, ip: "203.0.113.2", riskLevel: "medium", reasons: ["fixture"], checkedAt: stamp)]
         let group = NodeGroup(id: "fixture-group", name: "常用节点", nodeNames: nodes.map(\.name), members: nodes.map { NodeMember(identityKey: $0.identityKey, lastKnownName: $0.name) }, strategy: "manual")
         let members = nodes.map { GroupMemberState(identityKey: $0.identityKey, lastKnownName: $0.name, issue: nil, available: $0.available, delay: $0.delay, current: $0.selected) }
         let groupState = NodeGroupState(group: group, runtimeName: "fixture-group", selected: false, applied: false, currentMember: nil, members: members, availableCount: 2, failedCount: 0, untestedCount: 0)
-        let snapshot = Bootstrap(status: status, nodes: nodes, groups: [groupState], risks: risks, traffic: TrafficMonitor(rates: TrafficRate(upload: 0, download: 0), samples: [], running: true), legacyOwnerRunning: false, previewOnly: true, ownsRuntime: false, companyRouting: emptyRoute, dataDir: "/fixture-only")
+        var populatedStatus = status
+        populatedStatus.subscription.entries = [
+            Subscription(id: "fixture-sub", name: "日常线路", url: "https://subscription.example.test/fixture", enabled: true, updatedAt: fresh, nodeCount: 85, status: "ready", updateIntervalMinutes: 60),
+            Subscription(id: "fixture-backup", name: "备用线路", url: "https://backup.example.test/fixture", enabled: false, updatedAt: stamp, nodeCount: 32, status: "ready")
+        ]
+        let samples = (0..<90).map { i in TrafficSample(upload: (sin(Double(i) * 0.18) + 1.3) * 18000, download: (sin(Double(i) * 0.12) + 1.6) * 380000, sampledAt: fresh) }
+        let previewTraffic = TrafficMonitor(snapshot: TrafficSnapshot(uploadTotal: 124000000, downloadTotal: 2450000000, connectionCount: 3,
+            connections: [TrafficConnection(id: "fixture-connection", host: "example.test", network: "tcp", type: "TUN", rule: "DomainSuffix", rulePayload: "example.test", chains: ["日本 东京 · 示例节点"], upload: 24500, download: 1260000, process: "Safari", destination: "203.0.113.8")]),
+            rates: TrafficRate(upload: 24000, download: 850000), samples: samples, running: true)
+        var snapshot = Bootstrap(status: populatedStatus, nodes: nodes, groups: [groupState], risks: risks, traffic: previewTraffic, legacyOwnerRunning: false, previewOnly: true, ownsRuntime: false, companyRouting: emptyRoute, dataDir: "/fixture-only")
+        let schedule = #"""
+        {"automatic":true,"pausedReason":null,"connectivity":{"state":"ready","source":"automatic","checkedAt":"\#(fresh)","nextCheckAt":"\#(later)","intervalSeconds":300,"result":{"connectivity":{"domesticOk":true,"foreignOk":true,"externalIp":"203.0.113.8","latency":{"domesticMs":18,"foreignMs":183},"proxyOk":true}}},"websites":{"state":"ready","source":"automatic","checkedAt":"\#(fresh)","nextCheckAt":"\#(siteNext)","intervalSeconds":900,"result":{"proxyName":"日本 东京 · 示例节点","results":[{"id":"google","label":"Google","url":"https://www.google.com/generate_204","delay":183,"ok":true},{"id":"chatgpt","label":"ChatGPT","url":"https://chatgpt.com/cdn-cgi/trace","delay":null,"ok":false,"httpStatus":403,"failureReason":"restricted"},{"id":"claude","label":"Claude","url":"https://claude.ai","delay":612,"ok":true}]}}}
+        """#
+        snapshot.diagnostics = try JSONDecoder().decode(DiagnosticSchedule.self, from: Data(schedule.utf8))
         let vpn = VPNStore(preview: snapshot)
+        // Use a fake transport for enabled control states; no production core,
+        // account, keychain or networking service is started by this preview.
+        let fake = MenuCoreModel()
+        var interactive = try XCTUnwrap(JSONSerialization.jsonObject(with: fake.bootstrap().encoded) as? [String: Any])
+        interactive["nodes"] = nodes.map { node in
+            var row: [String: Any] = ["name": node.name, "type": node.type, "selected": node.selected, "subscriptionId": "fixture-sub", "subscriptionName": "示例订阅"]
+            if let value = node.identityKey { row["identityKey"] = value }
+            if let value = node.available { row["available"] = value }
+            if let value = node.delay { row["delay"] = value }
+            if let value = node.latencyStatus { row["latencyStatus"] = value }
+            if let value = node.latencyCheckedAt { row["latencyCheckedAt"] = value }
+            if let value = node.latencySource { row["latencySource"] = value }
+            if let value = node.latencyFailure { row["latencyFailure"] = value }
+            if let location = node.location { row["location"] = ["country":location.country ?? "", "city":location.city ?? "", "source":"name-recognized"] }
+            return row
+        }
+        interactive["risks"] = risks.map { ["nodeName":$0.nodeName,"riskLevel":$0.riskLevel,"ip":"203.0.113.1","reasons":$0.reasons,"checkedAt":fresh] as [String: Any] }
+        var interactiveStatus = interactive["status"] as! [String: Any]
+        interactiveStatus["mihomo"] = ["state": "running", "mode": "vpn"]
+        var interactiveSettings = interactiveStatus["settings"] as! [String: Any]
+        interactiveSettings["selectedProxy"] = nodes[0].name
+        interactiveStatus["settings"] = interactiveSettings; interactive["status"] = interactiveStatus
+        let interactivePayload = try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: interactive))
+        let nodeDesignStore = VPNStore(core: CoreService { _, _ in interactivePayload }, loginItems: PreviewLoginItemService(), riskKeyVault: FixtureVault())
+        await nodeDesignStore.refresh()
+        defer { nodeDesignStore.close() }
         func recoveryStore(_ payload: String) throws -> VPNStore {
             var sample = snapshot
             sample.status.mihomo.networkRecovery = try JSONDecoder().decode(NetworkRecoveryStatus.self, from: Data(payload.utf8))
@@ -67,6 +126,7 @@ final class LayoutPreviewTests: XCTestCase {
         passwordRetry.requireUsername = true
         var directDraft = RoutingRuleDraft(); directDraft.outlet = .direct; directDraft.address = "192.0.2.0/24"
         var vpnDraft = RoutingRuleDraft(); vpnDraft.address = "https://example.test/path"
+        nodeDesignStore.page = .nodes
         for (name, view) in [("overview-recovering", AnyView(OverviewView(store: recovering, company: connected))),
                               ("overview-restored", AnyView(OverviewView(store: restored, company: connected))),
                               ("overview-recovery-failed", AnyView(OverviewView(store: failedRecovery, company: connected))),
@@ -81,7 +141,13 @@ final class LayoutPreviewTests: XCTestCase {
                               ("company-connected", AnyView(CompanyView(store: connected, vpn: vpn, initializeOnAppear: false))),
                               ("company-verification", AnyView(CompanyVerificationSheet(store: connected, verifyOnAppear: false).frame(maxWidth: .infinity, maxHeight: .infinity))),
                               ("node-groups", AnyView(NodeGroupsView(store: vpn))),
-                              ("nodes", AnyView(NodesView(store: vpn))),
+                              ("nodes", AnyView(NodesView(store: nodeDesignStore))),
+                              ("nodes-selected", AnyView(NodesView(store: nodeDesignStore, initialSelection: [nodes[3].id]))),
+                              ("nodes-bottom", AnyView(NodesView(store: nodeDesignStore))),
+                              ("shell-overview", AnyView(ContentView(store: vpn, company: connected))),
+                              ("shell-nodes", AnyView(ContentView(store: nodeDesignStore, company: loggedOut))),
+                              ("traffic", AnyView(TrafficView(store: vpn))),
+                              ("logs", AnyView(LogsView(store: vpn, initializeOnAppear: false))),
                               ("subscriptions", AnyView(SubscriptionsView(store: vpn))),
                               ("subscription-editor", AnyView(SubscriptionEditor(draft: subscriptionDraft) { _, _, _ in }.frame(maxWidth: .infinity, maxHeight: .infinity))),
                               ("group-editor", AnyView(GroupEditor(group: group, nodes: nodes) { _ in }.frame(maxWidth: .infinity, maxHeight: .infinity))),
@@ -98,16 +164,25 @@ final class LayoutPreviewTests: XCTestCase {
                               ("diagnostics-risk", AnyView(DiagnosticsView(store: vpn, section: "节点风险"))),
                               ("diagnostics-subscription", AnyView(DiagnosticsView(store: vpn, section: "订阅探测")))] {
             if let pageFilter, !pageFilter.contains(name) { continue }
-            for size in [NSSize(width: 840, height: 640), NSSize(width: 1040, height: 780)] {
+            let sizes = name.hasPrefix("shell-") ? [NSSize(width: 1120, height: 760), NSSize(width: 1440, height: 960)] : [NSSize(width: 840, height: 640), NSSize(width: 1040, height: 780)]
+            for size in sizes {
               for scheme in [ColorScheme.light, .dark] {
                 defaults.set(scheme == .dark ? "dark" : "light", forKey: "previewAppearance")
-                let hosting = NSHostingView(rootView: view.background(VPNTheme.background).tint(VPNTheme.accent).foregroundStyle(VPNTheme.text).font(.system(size: 15)).controlSize(.large).buttonStyle(VPNButtonStyle()).defaultAppStorage(defaults).preferredColorScheme(scheme))
+                let hosting = NSHostingView(rootView: view.background(VPNTheme.background).tint(VPNTheme.accent).foregroundStyle(VPNTheme.text).font(.system(size: 13)).controlSize(.regular).buttonStyle(VPNButtonStyle()).defaultAppStorage(defaults).preferredColorScheme(scheme))
                 let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.borderless], backing: .buffered, defer: false)
                 window.appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
                 window.isReleasedWhenClosed = false; window.contentView = hosting
                 hosting.frame = NSRect(origin: .zero, size: size)
                 hosting.layoutSubtreeIfNeeded()
                 try await Task.sleep(nanoseconds: 150_000_000)
+                if name == "nodes-bottom" {
+                    func tables(_ view: NSView) -> [NSTableView] {
+                        (view as? NSTableView).map { [$0] } ?? view.subviews.flatMap { tables($0) }
+                    }
+                    for table in tables(hosting) { if table.numberOfRows > 0 { table.scrollRowToVisible(table.numberOfRows - 1) } }
+                    hosting.layoutSubtreeIfNeeded()
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                }
                 if name.hasPrefix("settings") {
                     func scrollViews(_ view: NSView) -> [NSScrollView] {
                         (view as? NSScrollView).map { [$0] } ?? view.subviews.flatMap { scrollViews($0) }

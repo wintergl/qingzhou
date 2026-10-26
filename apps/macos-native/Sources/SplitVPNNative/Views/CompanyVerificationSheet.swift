@@ -18,7 +18,7 @@ struct CompanyVerificationSheet: View {
             if store.working {
                 HStack(spacing: 10) { ProgressView().controlSize(.small); Text("正在验证…") }
             } else if let error = store.errorMessage {
-                Label(error, systemImage: "exclamationmark.circle").foregroundStyle(.red)
+                Label(error, systemImage: "exclamationmark.circle").foregroundStyle(VPNTheme.destructive)
                     .font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
             } else if passed {
                 Label("验证通过", systemImage: "checkmark.circle.fill").foregroundStyle(VPNTheme.green)

@@ -36,6 +36,11 @@ static async Task Run()
         ("状态读取失败清除已连接颜色，重新确认后恢复", TrayReadFailure),
         ("迟到的读取失败不覆盖新确认的状态", TrayLateReadFailure),
         ("业务操作失败不清除已确认的连接颜色", TrayBusinessFailure),
+        ("慢诊断期间可断开且迟到结果不覆盖断开状态", StopDuringDiagnostic),
+        ("连接尚未返回时可优先取消", StopDuringConnect),
+        ("内核仍运行但出口失败时不显示正常连接", DegradedPath),
+        ("断开后迟到的旧快照不能恢复已连接状态", StopDuringSnapshot),
+        ("自动检测结果带时间更新且不占用全局操作状态", AutomaticDiagnostics),
     };
     foreach (var (name, test) in tests)
     {
@@ -414,6 +419,74 @@ static async Task TrayOperations()
     stop.SetResult(new JsonObject());
     await Until(() => f.Store.Busy is null);
     Check(f.Store.TrayState == VPNTrayState.Disconnected && !f.Store.PersonalTrayConnected, "disconnect retained blue");
+}
+
+static async Task StopDuringDiagnostic()
+{
+    using var f = await Start();
+    var diagnostic = f.Core.Hold("connectivity:check");
+    f.Store.CheckConnectivity();
+    Check(f.Store.CanDisconnect && f.Store.CanControlConnection && !f.Store.CanMutate, "busy diagnostic disabled stop");
+    f.Core.Handlers["vpn:stop"] = _ => { f.Core.Status("stopped", "idle"); return Task.FromResult<JsonNode?>(new JsonObject()); };
+    f.Store.ConnectOrDisconnect();
+    await Until(() => f.Store.Busy is null);
+    Check(f.Core.Count("vpn:stop") == 1 && !f.Store.Running, "stop waited for diagnostic");
+    diagnostic.SetResult(new JsonObject { ["obsolete"] = true });
+    await Task.Yield();
+    Check(f.Store.Connectivity is null && !f.Store.Running, "late diagnostic repopulated stopped state");
+}
+
+static async Task StopDuringConnect()
+{
+    using var f = await Start(false);
+    var connecting = f.Core.Hold("vpn:start");
+    f.Store.Act("连接 VPN", "vpn:start");
+    Check(f.Store.CanDisconnect, "pending start cannot be cancelled");
+    f.Core.Handlers["vpn:stop"] = _ => { f.Core.Status("stopped", "idle"); return Task.FromResult<JsonNode?>(new JsonObject()); };
+    f.Store.ConnectOrDisconnect();
+    await Until(() => f.Store.Busy is null);
+    connecting.SetResult(new JsonObject());
+    await Task.Yield();
+    Check(f.Core.Count("vpn:stop") == 1 && !f.Store.Running && f.Store.TrayState == VPNTrayState.Disconnected, "late start restored connection UI");
+}
+
+static async Task DegradedPath()
+{
+    using var f = await Start();
+    f.Core.Emit("vpn:status", new JsonObject {
+        ["state"] = "running", ["networkRecovery"] = new JsonObject { ["state"] = "ready" },
+        ["connectionHealth"] = new JsonObject { ["state"] = "degraded", ["failureKind"] = "egress" },
+    });
+    Check(f.Store.Running && !f.Store.Connected && !f.Store.PersonalTrayConnected
+        && f.Store.TrayState == VPNTrayState.Error && f.Store.CanDisconnect, "degraded exit was shown as healthy or disabled stop");
+    f.Core.Status("running", "ready");
+    Check(f.Store.Connected, "older core without health evidence no longer compatible");
+}
+
+static async Task StopDuringSnapshot()
+{
+    using var f = await Start();
+    var snapshot = f.Core.Hold("native:bootstrap");
+    var refresh = f.Store.Refresh();
+    f.Core.Handlers["vpn:stop"] = _ => { f.Core.Status("stopped", "idle"); return Task.FromResult<JsonNode?>(new JsonObject()); };
+    f.Store.ConnectOrDisconnect();
+    snapshot.SetResult(new JsonObject {
+        ["status"] = new JsonObject { ["mihomo"] = new JsonObject { ["state"] = "running" } }, ["previewOnly"] = false,
+    });
+    await refresh;
+    Check(!f.Store.Running && f.Core.Count("vpn:stop") == 1, "old snapshot restored stopped connection");
+}
+
+static async Task AutomaticDiagnostics()
+{
+    using var f = await Start();
+    var before = f.Core.Count("connectivity:check");
+    f.Core.Emit("diagnostics:updated", JsonNode.Parse("""
+        {"automatic":true,"connectivity":{"state":"ready","source":"automatic","checkedAt":"2026-10-25T20:00:00Z","nextCheckAt":"2026-10-25T20:05:00Z","intervalSeconds":300,"result":{"connectivity":{"foreignOk":false}}},"websites":{"state":"idle"}}
+        """));
+    Check(f.Store.DiagnosticTiming("connectivity").Contains("自动检测") && f.Store.DiagnosticTiming("connectivity").Contains("下次"), "schedule times missing");
+    Check(f.Store.Connectivity.At("connectivity").At("foreignOk").Bool() == false, "automatic result not applied");
+    Check(f.Store.Busy is null && f.Core.Count("connectivity:check") == before, "UI duplicated or blocked on automatic check");
 }
 
 static async Task TrayReadFailure()

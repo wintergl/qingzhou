@@ -30,7 +30,7 @@ struct CompanyView: View {
                             Text(step.1).fontWeight(.medium)
                             Text(needsPasswordChange ? "需修改密码" : step.0 == "routing" && !store.takeoverEnabled ? "未接管" : phase.rawValue).font(.system(size: 11))
                         }
-                    }.font(.system(size: 12)).foregroundStyle(needsPasswordChange ? Color.orange : phaseColor(phase)).frame(maxWidth: .infinity, alignment: .leading)
+                    }.font(.system(size: 12)).foregroundStyle(needsPasswordChange ? VPNTheme.warning : phaseColor(phase)).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }.padding(.vertical, 4)
             if let issue = store.loginIssue { passwordChangeGuidance(issue) }
@@ -47,7 +47,7 @@ struct CompanyView: View {
                     Text("\(store.errorHeading)：\(message)").lineLimit(1).help(message)
                     Spacer(minLength: 0)
                     Button("详情") { showingDetails = true }
-                }.font(.system(size: 13)).foregroundStyle(.red)
+                }.font(.system(size: 13)).foregroundStyle(VPNTheme.destructive)
             }
         }.padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .onAppear { if initializeOnAppear { store.startOnce() }; handleRequestedInteraction() }
@@ -76,7 +76,7 @@ struct CompanyView: View {
             if store.probe != nil {
                 HStack(alignment: .top, spacing: 6) {
                     Image(systemName: store.certificateState.approved ? "checkmark.shield.fill" : "exclamationmark.shield")
-                        .foregroundStyle(store.certificateState.approved ? VPNTheme.green : Color.orange)
+                        .foregroundStyle(store.certificateState.approved ? VPNTheme.green : VPNTheme.warning)
                     Text(store.certificateState.title).font(.system(size: 11)).lineLimit(2)
                     Spacer(minLength: 0)
                     if store.certificateState.requiresUserConfirmation {
@@ -117,7 +117,7 @@ struct CompanyView: View {
     private func passwordChangeGuidance(_ issue: CompanyLoginIssue) -> some View {
         HStack(alignment: .top, spacing: 16) {
             VStack(alignment: .leading, spacing: 8) {
-                Label(issue.title, systemImage: "key.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(.orange)
+                Label(issue.title, systemImage: "key.fill").font(.system(size: 13, weight: .semibold)).foregroundStyle(VPNTheme.warning)
                 Text(issue.message).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }.frame(minWidth: 300, maxWidth: .infinity, alignment: .leading)
             VStack(alignment: .trailing, spacing: 8) {
@@ -130,7 +130,7 @@ struct CompanyView: View {
                 }
             }.fixedSize()
         }.frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12).background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+            .padding(12).background(VPNTheme.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
     private var businessCard: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -158,7 +158,7 @@ struct CompanyView: View {
                 Button("检查 GPT 网络") { store.verifyInternet() }.disabled(store.working).font(.system(size: 12))
                 if let internet = store.routingState?.internet {
                     Text(internet.result.ok ? "可达 · \(internet.result.elapsedMs) ms" : "未连通")
-                        .font(.system(size: 12)).foregroundStyle(internet.result.ok ? VPNTheme.green : .orange)
+                        .font(.system(size: 12)).foregroundStyle(internet.result.ok ? VPNTheme.green : VPNTheme.warning)
                         .help(internet.result.error ?? dateText(internet.checkedAt))
                 } else { Text("外网结果单独检测").font(.system(size: 12)).foregroundStyle(.secondary) }
                 Spacer(minLength: 0)
@@ -203,7 +203,7 @@ struct CompanyView: View {
                         Text(probe.subject).font(.headline)
                         Text("有效期至 \(dateText(probe.validTo))")
                         Text("SHA-256\n\(probe.fingerprint)").font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                        Text(store.certificateState.title).foregroundStyle(store.certificateState.approved ? VPNTheme.green : Color.orange)
+                        Text(store.certificateState.title).foregroundStyle(store.certificateState.approved ? VPNTheme.green : VPNTheme.warning)
                         if store.certificateState.requiresUserConfirmation {
                             Text(store.certificateState == .changed ? "证书与之前确认的网关不同。确认网关管理员已更换证书后，再更新网关记录。" : "该证书尚未被系统信任。首次确认属于目标网关后，只为这个网关记住指纹；之后自动核验。")
                                 .font(.system(size: 13))
@@ -216,7 +216,7 @@ struct CompanyView: View {
                             }.disabled(store.working || store.hasSession)
                         }
                     } else { Text("检测入口后可查看网关证书。") }
-                    if let message = store.errorMessage { Text("\(store.errorHeading)：\(message)").foregroundStyle(.red).textSelection(.enabled) }
+                    if let message = store.errorMessage { Text("\(store.errorHeading)：\(message)").foregroundStyle(VPNTheme.destructive).textSelection(.enabled) }
                     Divider()
                     ForEach(store.timeline) { item in
                         Text("\(item.time.formatted(date: .omitted, time: .standard))  \(item.message)").font(.system(size: 13)).textSelection(.enabled)
@@ -227,7 +227,7 @@ struct CompanyView: View {
         }.padding(24).frame(width: 620, height: 500).buttonStyle(VPNButtonStyle())
     }
     private func phaseColor(_ phase: TestPhase) -> Color {
-        switch phase { case .passed: return VPNTheme.green; case .failed: return .red; case .running: return VPNTheme.accent; case .pending: return VPNTheme.secondary }
+        switch phase { case .passed: return VPNTheme.green; case .failed: return VPNTheme.destructive; case .running: return VPNTheme.accent; case .pending: return VPNTheme.secondary }
     }
     private func handleRequestedInteraction() {
         guard let interaction = store.requestedInteraction else { return }

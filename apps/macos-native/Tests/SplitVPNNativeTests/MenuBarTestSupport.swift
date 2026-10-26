@@ -55,6 +55,7 @@ final class MenuCoreModel {
     var legacy = false
     var owns = true
     var stateError: String?
+    var healthState: String?
     var processStartedAt: String?
     var networkHistory: [JSONValue] = []
     var networkState: String?
@@ -68,6 +69,7 @@ final class MenuCoreModel {
                  "mode": .string(mode), "pid": running ? .number(1234) : .null,
                  "startedAt": processStartedAt.map(JSONValue.string) ?? .null,
                  "lastError": stateError.map(JSONValue.string) ?? .null,
+                 "connectionHealth": healthState.map { .object(["state": .string($0), "failureKind": .string("egress")]) } ?? .null,
                  "networkRecovery": networkState.map { .object([
                     "state": .string($0), "history": .array(networkHistory), "error": networkError.map(JSONValue.string) ?? .null,
                     "helperUpdateRequired": .bool($0 == "helper-update-required")

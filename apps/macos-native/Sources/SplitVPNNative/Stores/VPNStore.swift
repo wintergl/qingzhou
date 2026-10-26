@@ -22,6 +22,10 @@ final class VPNStore: ObservableObject {
     @Published var message: String?
     @Published var error: String?
     @Published private(set) var connectivity: ConnectivityCheck?
+    @Published private(set) var diagnostics: DiagnosticSchedule?
+    @Published private(set) var speedBatchRunning = false
+    @Published private(set) var speedProgress: NodeSpeedProgress?
+    @Published private(set) var speedTestingNode: String?
     @Published private(set) var websites: WebsiteTests?
     @Published private(set) var batchMessage: String?
     @Published private(set) var riskBatchRunning = false
@@ -34,6 +38,7 @@ final class VPNStore: ObservableObject {
     let core: CoreService
     private let loginItems: any LoginItemService
     var onCompanyRouting: ((CompanyRoutingState) -> Void)?
+    private var operationGeneration: UInt64 = 0
     private var started = false
     private var startupConnectionRequested = false
     private var startup: Task<Void, Never>?
@@ -55,6 +60,7 @@ final class VPNStore: ObservableObject {
         if let preview {
             started = true; statusKnown = true; status = preview.status; nodes = preview.nodes; groups = preview.groups; risks = preview.risks
             traffic = preview.traffic; previewOnly = true; companyRouting = preview.companyRouting
+            if let diagnostics = preview.diagnostics { applyDiagnostics(diagnostics) }
             if let loginItems { loginItemState = loginItems.state() }
         }
         coreObservation = self.core.$availability.sink { [weak self] availability in
@@ -71,7 +77,15 @@ final class VPNStore: ObservableObject {
     var favoriteNames: Set<String> { Set(status?.settings.favoriteNodeNames ?? []) }
     var providerNodes: [VPNNode] { nodes.filter(\.isProvider) }
     var currentRisk: NodeRisk? { risks.first { $0.nodeName == selectedProxy } }
-    var canMutate: Bool { !previewOnly && !terminating && busy == nil && statusKnown && status != nil }
+    var canMutate: Bool { !previewOnly && !terminating && busy == nil && connectionOperation != .disconnecting && statusKnown && status != nil }
+    var connectionRequested: Bool {
+        running || connectionOperation == .connecting || status?.mihomo.networkRecovery?.active == true
+    }
+    var canDisconnect: Bool {
+        !previewOnly && !terminating && statusKnown && !connectionProtected
+            && connectionRequested && connectionOperation != .disconnecting
+    }
+    var canControlConnection: Bool { canDisconnect || canMutate }
     var connectionProtected: Bool { legacyOwnerRunning && running && !ownsRuntime }
 
     func startOnce() {
@@ -81,6 +95,23 @@ final class VPNStore: ObservableObject {
         refreshLoginItem()
         core.onEvent = { [weak self] event, value in
             guard let self else { return }
+            if event == "diagnostics:updated", let value, let state = try? JSONDecoder().decode(DiagnosticSchedule.self, from: value.encoded) {
+                self.applyDiagnostics(state); return
+            }
+            if event == "nodes:speed-progress", let value, let progress = try? JSONDecoder().decode(NodeSpeedProgress.self, from: value.encoded) {
+                self.speedProgress = progress; self.speedBatchRunning = !progress.finished
+                self.speedTestingNode = progress.phase == "testing" ? progress.nodeName : nil
+                if let result = progress.result, let index = self.nodes.firstIndex(where: { $0.name == result.nodeName && $0.identityAmbiguous != true }) {
+                    self.nodes[index].delay = result.medianDelayMs.flatMap { $0 > 0 ? $0 : nil }
+                    self.nodes[index].available = result.status == "available" || result.status == "unstable"
+                    self.nodes[index].latencyStatus = result.status
+                    self.nodes[index].latencyCheckedAt = result.testedAt
+                    self.nodes[index].latencySource = "manual"
+                    self.nodes[index].latencyFailure = result.failureReason
+                }
+                if progress.finished { self.speedTestingNode = nil; Task { await self.refresh() } }
+                return
+            }
             if event == "vpn:status", let value,
                let state = try? JSONDecoder().decode(CoreStatus.self, from: value.encoded) {
                 self.status?.mihomo = state
@@ -131,13 +162,16 @@ final class VPNStore: ObservableObject {
     func refresh() async {
         guard !terminating else { return }
         do { try await refreshSnapshot() }
+        catch is CancellationError { return }
         catch { statusKnown = false; self.error = error.localizedDescription }
     }
-    private func refreshSnapshot(timeout: Duration = CoreService.requestTimeout) async throws {
+    private func refreshSnapshot(timeout: Duration? = nil) async throws {
         while refreshing { try await Task.sleep(for: .milliseconds(20)) }
         refreshing = true
         defer { refreshing = false }
+        let generation = operationGeneration
         let data: Bootstrap = try await core.request("native:bootstrap", timeout: timeout)
+        guard generation == operationGeneration else { throw CancellationError() }
         guard core.availability != .closed else { throw CoreService.CoreError.message("VPN 服务已关闭。") }
         statusKnown = true
         status = data.status; nodes = data.nodes; risks = data.risks
@@ -161,11 +195,31 @@ final class VPNStore: ObservableObject {
                                   untestedCount: members.filter { $0.available == nil }.count)
         }
         traffic = data.traffic; previewOnly = data.previewOnly
+        if let diagnostics = data.diagnostics { applyDiagnostics(diagnostics) }
         ownsRuntime = data.ownsRuntime; companyRouting = data.companyRouting
         onCompanyRouting?(data.companyRouting)
         legacyOwnerRunning = data.legacyOwnerRunning
         refreshLoginItem()
         startPolling()
+    }
+    private func applyDiagnostics(_ state: DiagnosticSchedule) {
+        diagnostics = state
+        connectivity = state.connectivity.result.flatMap { try? JSONDecoder().decode(ConnectivityCheck.self, from: $0.encoded) }
+        websites = state.websites.result.flatMap { try? JSONDecoder().decode(WebsiteTests.self, from: $0.encoded) }
+    }
+    func startNodeSpeed(_ requested: [VPNNode]) {
+        guard canMutate, running, !speedBatchRunning else { return }
+        let names = requested.filter { $0.isProvider && $0.identityAmbiguous != true }.map(\.name)
+        guard !names.isEmpty else { return }
+        speedBatchRunning = true; speedProgress = nil; speedTestingNode = nil
+        Task {
+            do { _ = try await core.requestValue("nodes:start-speed-batch", payload: ["nodeNames": names]) }
+            catch { speedBatchRunning = false; self.error = error.localizedDescription }
+        }
+    }
+    func cancelNodeSpeed() {
+        guard speedBatchRunning, !terminating else { return }
+        Task { do { _ = try await core.requestValue("nodes:cancel-speed-batch") } catch { self.error = error.localizedDescription } }
     }
     func refreshTraffic() async {
         guard !terminating, !refreshingTraffic else { return }
@@ -182,12 +236,14 @@ final class VPNStore: ObservableObject {
         startupConnectionRequested = true
         busy = running ? "读取连接状态" : "自动连接 VPN"
         connectionOperation = running ? nil : .connecting
-        defer { busy = nil; connectionOperation = nil }
+        let generation = operationGeneration
+        defer { if generation == operationGeneration { busy = nil; connectionOperation = nil } }
         do {
             let result: StartupConnection = try await core.request("native:startup-connect")
             guard !Task.isCancelled else { return }
             status?.mihomo = result.mihomo
             await refresh()
+            guard generation == operationGeneration, !Task.isCancelled else { return }
             if result.startupOutcome == "connected" { message = "已自动连接 VPN。" }
             else if result.startupOutcome == "waiting-network" { message = "网络尚未就绪，就绪后将自动连接 VPN。" }
             else if result.startupOutcome == "helper-update-required" { message = "请先更新连接服务，再连接 VPN。" }
@@ -250,8 +306,8 @@ final class VPNStore: ObservableObject {
         if !value.sleeping, value.visible, !previous.visible, running {
             Task { [weak self] in await self?.refreshTraffic() }
         }
-        if forceReport || value.sleeping != previous.sleeping || value.lowPower != previous.lowPower {
-            let payload: [String: Any] = ["sleeping": value.sleeping, "lowPower": value.lowPower, "networkEvents": networkEventsEnabled]
+        if forceReport || value.sleeping != previous.sleeping || value.lowPower != previous.lowPower || value.visible != previous.visible {
+            let payload: [String: Any] = ["sleeping": value.sleeping, "lowPower": value.lowPower, "networkEvents": networkEventsEnabled, "visible": value.visible]
             Task { [weak self] in
                 guard let self, !self.terminating else { return }
                 _ = try? await self.core.requestValue("native:runtime-environment", payload: payload)
@@ -262,23 +318,45 @@ final class VPNStore: ObservableObject {
         guard canMutate, connectionServiceUpdateRequired else { return }
         action("更新连接服务", channel: "native:upgrade-helper")
     }
+    func disconnectNow() async throws {
+        guard canDisconnect else { return }
+        operationGeneration &+= 1
+        startup?.cancel(); operation?.cancel()
+        connectionOperation = .disconnecting; busy = "断开 VPN"
+        connectivity = nil; websites = nil; error = nil; message = nil
+        defer { connectionOperation = nil; busy = nil }
+        do {
+            let stopped: CoreStatus = try await core.request("vpn:stop", timeout: .seconds(45))
+            guard stopped.state == "stopped", stopped.pid == nil else {
+                throw CoreService.CoreError.message("VPN 断开尚未确认，请刷新状态后重试。")
+            }
+            status?.mihomo = stopped; statusKnown = status != nil
+            message = "VPN 已断开。"
+        } catch { self.error = error.localizedDescription; throw error }
+    }
     func action(_ title: String, channel: String, payload: [String: Any] = [:]) {
+        if channel == "vpn:stop", canDisconnect {
+            Task { try? await disconnectNow() }; return
+        }
         guard canMutate else { error = "服务尚未就绪或已有操作正在进行，请稍后重试。"; return }
         guard busy == nil else { return }
         busy = title; error = nil; message = nil
         connectionOperation = channel == "vpn:start" ? .connecting : channel == "vpn:stop" ? .disconnecting : nil
+        let generation = operationGeneration
         operation = Task {
-            defer { busy = nil; connectionOperation = nil }
+            defer { if generation == operationGeneration { busy = nil; connectionOperation = nil } }
             do {
                 let result = try await core.requestValue(channel, payload: payload)
+                guard generation == operationGeneration, !Task.isCancelled else { return }
                 if case .object(let fields) = result, case .bool(false) = fields["controllerOk"] {
                     let detail = fields["controllerError"].flatMap { if case .string(let message) = $0 { return message }; return nil }
                     throw CoreService.CoreError.message(detail ?? "内核连接验证失败。")
                 }
                 try await refreshSnapshot()
+                guard generation == operationGeneration, !Task.isCancelled else { return }
                 message = "\(title)完成"
             }
-            catch { self.error = error.localizedDescription }
+            catch { if generation == operationGeneration { self.error = error.localizedDescription } }
         }
     }
     func saveRoutingRule(_ draft: RoutingRuleDraft) async throws {
@@ -290,6 +368,7 @@ final class VPNStore: ObservableObject {
         message = "分流规则已保存"
     }
     func connectOrVerify() {
+        if canDisconnect { Task { try? await disconnectNow() }; return }
         guard canMutate else { return }
         if !running && selectedProxy != "DIRECT" && !providerNodes.contains(where: { $0.name == selectedProxy && $0.identityAmbiguous != true }) {
             page = .nodes; message = "请选择一个具体节点后连接 VPN。"; return
@@ -359,31 +438,42 @@ final class VPNStore: ObservableObject {
         Task { do { _ = try await core.requestValue("nodes:cancel-risk-batch") } catch { self.error = error.localizedDescription } }
     }
     func checkConnectivity() {
-        guard busy == nil, !terminating else { return }
+        guard busy == nil, !terminating, diagnostics?.connectivity.running != true else { return }
         busy = "检测连通性"; error = nil
+        let generation = operationGeneration
         operation = Task {
-            defer { busy = nil }
-            do { connectivity = try await core.request("connectivity:check"); await refresh() }
-            catch { self.error = error.localizedDescription }
+            defer { if generation == operationGeneration { busy = nil } }
+            do {
+                let result: ConnectivityCheck = try await core.request("connectivity:check")
+                guard generation == operationGeneration, !Task.isCancelled else { return }
+                connectivity = result; await refresh()
+            } catch { if generation == operationGeneration { self.error = error.localizedDescription } }
         }
     }
     func testWebsites() {
-        guard busy == nil, !terminating else { return }
+        guard busy == nil, !terminating, diagnostics?.websites.running != true else { return }
         busy = "检测站点"; error = nil
+        let generation = operationGeneration
         operation = Task {
-            defer { busy = nil }
-            do { websites = try await core.request("connectivity:test-website-speeds") }
-            catch { self.error = error.localizedDescription }
+            defer { if generation == operationGeneration { busy = nil } }
+            do {
+                let result: WebsiteTests = try await core.request("connectivity:test-website-speeds")
+                guard generation == operationGeneration, !Task.isCancelled else { return }
+                websites = result
+            } catch { if generation == operationGeneration { self.error = error.localizedDescription } }
         }
     }
     /// Menu and popover requests re-read the actual state before choosing an action.
     func toggleConnection() async throws {
+        if canDisconnect { try await disconnectNow(); return }
         guard !terminating, busy == nil else { return }
         busy = "读取连接状态"; error = nil; message = nil
         connectionOperation = running ? .disconnecting : .connecting
-        defer { busy = nil; connectionOperation = nil }
+        let generation = operationGeneration
+        defer { if generation == operationGeneration { busy = nil; connectionOperation = nil } }
         do {
             try await refreshSnapshot()
+            guard generation == operationGeneration, !Task.isCancelled else { return }
             guard !terminating, !previewOnly else { return }
             guard !connectionProtected else { throw CoreService.CoreError.message("当前连接由原版维护，请在原版控制连接。") }
             guard status?.mihomo.mode != "subscription-probe" else { throw CoreService.CoreError.message("订阅检测进行中，请等待检测结束。") }
@@ -394,12 +484,15 @@ final class VPNStore: ObservableObject {
             connectionOperation = running ? .disconnecting : .connecting
             busy = running ? "断开 VPN" : "连接 VPN"
             let result = try await core.requestValue(running ? "vpn:stop" : "vpn:start")
+            guard generation == operationGeneration, !Task.isCancelled else { return }
             if case .object(let fields) = result, case .bool(false) = fields["controllerOk"] {
                 throw CoreService.CoreError.message("内核连接验证失败。")
             }
             try await refreshSnapshot()
+            guard generation == operationGeneration, !Task.isCancelled else { return }
             message = running ? "VPN 已连接。" : "VPN 已断开。"
         } catch {
+            guard generation == operationGeneration else { return }
             self.error = error.localizedDescription
             if case .unavailable = core.availability { statusKnown = false }
             throw error

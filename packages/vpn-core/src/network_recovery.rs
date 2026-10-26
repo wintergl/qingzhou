@@ -7,6 +7,13 @@ use std::time::{Duration, Instant};
 const STABLE_FOR: Duration = Duration::from_secs(3);
 const MAX_ATTEMPTS: u32 = 3;
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecoveryAction {
+    RefreshDns,
+    Reload,
+    Restart,
+}
+
 #[derive(Clone, Default)]
 pub struct NetworkRecovery {
     sequence: u64,
@@ -26,6 +33,29 @@ pub struct NetworkRecovery {
 }
 
 impl NetworkRecovery {
+    pub fn same_path(&self, signature: Option<&str>) -> bool {
+        signature.is_some() && self.applied.as_deref() == signature
+    }
+    pub fn reason(&self) -> Option<&str> {
+        self.active.as_ref().map(|active| active.3.as_str())
+    }
+    pub fn attempts(&self) -> u32 {
+        self.attempts
+    }
+    pub fn action(
+        &self,
+        same_path: bool,
+        dns_refresh_supported: bool,
+        can_restart: bool,
+    ) -> RecoveryAction {
+        if same_path && self.reason() == Some("dns-health") && dns_refresh_supported {
+            RecoveryAction::RefreshDns
+        } else if self.reason() == Some("health-check") && self.attempts == 1 && can_restart {
+            RecoveryAction::Restart
+        } else {
+            RecoveryAction::Reload
+        }
+    }
     pub fn status(&self) -> Value {
         json!({"state":self.state.unwrap_or("idle"),"error":self.error,
                "attempts":self.attempts,"maxAttempts":MAX_ATTEMPTS,
@@ -128,6 +158,15 @@ impl NetworkRecovery {
         }
         self.check_pending = false;
         Some(self.sequence)
+    }
+    pub fn needs_verification(&self) -> bool {
+        self.check_pending
+    }
+
+    pub fn defer_check(&mut self, id: u64) {
+        if id == self.sequence && self.state == Some("ready") {
+            self.check_pending = true;
+        }
     }
 
     pub fn checked(&mut self, id: u64, ok: bool) {
@@ -232,6 +271,27 @@ impl NetworkRecovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn escalation_is_limited_to_controller_failure_and_owned_independent_runtime() {
+        let mut recovery = NetworkRecovery::default();
+        recovery.changed_for(None, "dns-health");
+        assert_eq!(
+            recovery.action(true, true, true),
+            RecoveryAction::RefreshDns
+        );
+        assert_eq!(recovery.action(false, true, true), RecoveryAction::Reload);
+        recovery.changed_for(None, "health-check");
+        assert_eq!(recovery.action(true, true, true), RecoveryAction::Reload);
+        recovery.failed("fixture".into(), Instant::now());
+        assert_eq!(recovery.action(true, true, true), RecoveryAction::Restart);
+        assert_eq!(recovery.action(true, true, false), RecoveryAction::Reload);
+        recovery.failed("fixture".into(), Instant::now());
+        assert_eq!(recovery.action(true, true, true), RecoveryAction::Reload);
+        recovery.changed_for(None, "egress-health");
+        recovery.failed("fixture".into(), Instant::now());
+        assert_eq!(recovery.action(true, true, true), RecoveryAction::Reload);
+    }
 
     #[test]
     fn unchanged_live_network_does_not_reload_but_outage_on_same_network_does() {

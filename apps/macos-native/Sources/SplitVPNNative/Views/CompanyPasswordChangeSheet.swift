@@ -39,7 +39,7 @@ struct CompanyPasswordChangeSheet: View {
                     }
                     if let error = challenge.errorMessage, !error.isEmpty {
                         Label(error, systemImage: "exclamationmark.circle.fill")
-                            .foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                            .foregroundStyle(VPNTheme.destructive).fixedSize(horizontal: false, vertical: true)
                     }
                     if let rules = challenge.rules, !rules.isEmpty {
                         VStack(alignment: .leading, spacing: 5) {
@@ -61,7 +61,7 @@ struct CompanyPasswordChangeSheet: View {
                     SecureField("再次输入新密码", text: $input.confirmation).focused($focused, equals: .confirmation)
                         .textContentType(.newPassword).onSubmit(submit)
                     if !input.confirmation.isEmpty, let validation {
-                        Text(validation).font(.system(size: 12)).foregroundStyle(.red)
+                        Text(validation).font(.system(size: 12)).foregroundStyle(VPNTheme.destructive)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }.textFieldStyle(.roundedBorder).padding(.trailing, 4)

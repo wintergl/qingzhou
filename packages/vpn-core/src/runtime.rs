@@ -3,6 +3,7 @@ use crate::{
     company::Company,
     config,
     connection_health::ConnectionHealth,
+    diagnostics::{CheckKind, Diagnostics},
     network,
     network_recovery::NetworkRecovery,
     platform,
@@ -334,6 +335,131 @@ mod helper_upgrade_tests {
     }
 
     #[test]
+    fn same_path_egress_repair_does_not_close_direct_or_company_sockets() {
+        let (_root, mut core, controller) = recovery_fixture();
+        core.network_recovery.applied(Some("fixture-path".into()));
+        core.network_recovery.changed_for(None, "egress-health");
+        core.recover_network(&json!({"interfaceName":"en0","signature":"fixture-path"}))
+            .unwrap();
+        assert!(controller.deletes.lock().unwrap().is_empty());
+        assert!(controller.writes.load(Ordering::SeqCst) > 0);
+    }
+
+    #[test]
+    fn stale_sampler_cannot_change_health_or_traffic_after_stop_intent() {
+        let (_root, mut core, _controller) = recovery_fixture();
+        core.network_recovery.applied(Some("fixture-path".into()));
+        let sample = core.take_background_sample().unwrap();
+        core.jobs.stop_requested.store(true, Ordering::SeqCst);
+        core.jobs.invalidate_diagnostics();
+        core.complete_background_sample(
+            &sample,
+            SampleResult {
+                proxies: Ok(json!({"proxies":{}})),
+                connections: Ok(json!({"uploadTotal":999,"connections":[]})),
+                controller: Some(false),
+                path: crate::path_health::PathOutcome::EgressFailure,
+                retry_outcome: None,
+            },
+        );
+        assert!(core.traffic()["snapshot"].is_null());
+        assert_eq!(core.health_failures, 0);
+        assert_eq!(core.path_health.status()["state"], "unknown");
+    }
+
+    #[test]
+    fn failed_stop_still_cancels_personal_reconnect_intent() {
+        let (_root, mut core, _controller) = recovery_fixture();
+        core.network_recovery.changed_for(None, "health-check");
+        // A fixture PID without a child cannot be killed: no real process is touched.
+        assert!(core.handle("vpn:stop", &json!({})).is_err());
+        assert!(!core.wants_running);
+        assert_eq!(core.network_recovery.status()["state"], "idle");
+        core.handle("native:network-changed", &json!({"available":true}))
+            .unwrap();
+        assert_eq!(core.network_recovery.status()["state"], "idle");
+    }
+
+    #[test]
+    fn diagnostic_schedule_rejects_duplicates_and_results_after_stop() {
+        let (_root, mut core, _controller) = recovery_fixture();
+        core.network_recovery.applied(Some("fixture-path".into()));
+        let plan = core
+            .begin_diagnostic(CheckKind::Connectivity, true)
+            .unwrap();
+        assert!(
+            core.begin_diagnostic(CheckKind::Connectivity, true)
+                .is_err()
+        );
+        core.complete_diagnostic(&plan, Ok(json!({"connectivity":{"foreignOk":true}})))
+            .unwrap();
+        assert_eq!(
+            core.diagnostics.status()["connectivity"]["source"],
+            "manual"
+        );
+        assert!(core.diagnostics.status()["connectivity"]["checkedAt"].is_string());
+        let pending = core.begin_diagnostic(CheckKind::Websites, true).unwrap();
+        let _ = core.handle("vpn:stop", &json!({}));
+        assert!(
+            core.complete_diagnostic(&pending, Ok(json!({"old":true})))
+                .is_err()
+        );
+        assert_eq!(core.diagnostics.status()["connectivity"]["state"], "stale");
+        assert_eq!(core.diagnostics.status()["pausedReason"], "disconnected");
+    }
+
+    #[test]
+    fn exhausted_repair_budget_does_not_disable_informational_periodic_checks() {
+        let (_root, mut core, _controller) = recovery_fixture();
+        core.network_recovery.applied(Some("fixture-path".into()));
+        for _ in 0..3 {
+            core.network_recovery
+                .failed("fixture".into(), Instant::now());
+        }
+        core.sync_diagnostics();
+        assert!(core.diagnostics.status()["pausedReason"].is_null());
+        assert_eq!(core.network_recovery.status()["state"], "failed");
+    }
+
+    #[test]
+    fn hidden_sampling_is_slow_but_recovery_verification_is_not_delayed() {
+        let (_root, mut core, _controller) = recovery_fixture();
+        core.environment.visible = Some(false);
+        core.last_health_tick = Some(Instant::now());
+        core.last_sample_tick = Some(Instant::now());
+        core.network_recovery.applied(Some("fixture-path".into()));
+        assert!(core.take_background_sample().is_none());
+        core.network_recovery.changed_for(None, "egress-health");
+        core.network_recovery.applied(Some("fixture-path".into()));
+        assert!(core.take_background_sample().is_some());
+    }
+
+    #[test]
+    fn probe_lease_prevents_concurrent_selector_changes_without_core_lock() {
+        let (_root, core, controller) = recovery_fixture();
+        let _lease = core.jobs.probe_gate.lock().unwrap();
+        let plan = NodeDiagnostic {
+            io: core.engine.io(),
+            node: json!({"runtimeUdpSupported":true}),
+            name: "DIRECT".into(),
+            kind: "risk".into(),
+            recommended: false,
+            probe: controller.port,
+            risk_key: String::new(),
+            endpoint: None,
+            token: core.diagnostic_token(),
+            jobs: core.jobs.clone(),
+        };
+        assert!(
+            plan.measure()
+                .unwrap_err()
+                .to_string()
+                .contains("检测入口正在使用")
+        );
+        assert_eq!(controller.writes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
     fn recovery_rebinds_the_interface_and_preserves_company_and_unknown_sockets() {
         let (_root, mut core, controller) = recovery_fixture();
         core.network_recovery.changed(None);
@@ -539,6 +665,11 @@ mod helper_upgrade_tests {
 
 #[derive(Default)]
 pub struct Jobs {
+    /// Set by the input reader, before the stop can acquire the writer lock.
+    pub stop_requested: Arc<AtomicBool>,
+    pub intent_epoch: AtomicU64,
+    pub read_views: Mutex<std::collections::HashMap<String, Value>>,
+    probe_gate: Arc<Mutex<()>>,
     background_pending: Mutex<bool>,
     background_wake: Condvar,
     /// Tokens of manual subscription downloads in flight. Removed by
@@ -553,6 +684,11 @@ pub struct Jobs {
     pub udp_active: AtomicBool,
 }
 impl Jobs {
+    pub fn invalidate_diagnostics(&self) {
+        self.intent_epoch.fetch_add(1, Ordering::SeqCst);
+        self.cancel_all();
+        self.wake_background();
+    }
     pub fn wake_background(&self) {
         if let Ok(mut pending) = self.background_pending.lock() {
             *pending = true;
@@ -594,73 +730,16 @@ impl Jobs {
             .load(Ordering::SeqCst)
     }
 }
-pub struct Engine {
-    pub store: Storage,
-    pub binary: PathBuf,
-    pub pid: Option<u32>,
-    pub owned: Option<u32>,
-    pub mixed: u16,
-    pub controller: u16,
-    /// Loopback inbound bound to the PROBE selector; 0 until configured.
-    pub probe: u16,
-    pub mode: String,
-    pub isolated: bool,
-    child: Option<Child>,
+/// A controller handle has no authority to start/stop a process or change core state.
+#[derive(Clone)]
+struct ControllerIo {
+    store: Storage,
+    isolated: bool,
+    controller: u16,
     client: Client,
-    /// Controller secret the running engine is believed to accept.
-    secret: Mutex<String>,
-    pub last_error: Option<String>,
-    pub started: Option<String>,
-    reload_attempts: AtomicU64,
+    secret: Arc<Mutex<String>>,
 }
-impl Engine {
-    pub fn new(store: Storage, resources: PathBuf, isolated: bool) -> Result<Self> {
-        let mut e = Self {
-            store,
-            binary: resources.join(if cfg!(windows) {
-                "mihomo.exe"
-            } else {
-                "mihomo"
-            }),
-            pid: None,
-            owned: None,
-            mixed: 7890,
-            controller: 9090,
-            probe: 0,
-            mode: "vpn".into(),
-            isolated,
-            child: None,
-            client: Client::builder()
-                .no_proxy()
-                .timeout(Duration::from_secs(6))
-                .build()?,
-            secret: Mutex::new(String::new()),
-            last_error: None,
-            started: None,
-            reload_attempts: AtomicU64::new(0),
-        };
-        if isolated {
-            if let Ok(port) = std::env::var("SPLITVPN_TEST_CONTROLLER_PORT") {
-                e.controller = port.parse()?;
-                ensure!(
-                    e.controller != 9090 && e.controller != 9091,
-                    "隔离控制器不能使用正式端口。"
-                );
-                e.mixed = std::env::var("SPLITVPN_TEST_MIXED_PORT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0);
-                e.probe = std::env::var("SPLITVPN_TEST_PROBE_PORT")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(e.mixed);
-                e.pid = Some(std::process::id());
-            }
-        } else {
-            let _ = e.attach();
-        }
-        Ok(e)
-    }
+impl ControllerIo {
     /// Send with the believed secret. A 401 means the request was not applied,
     /// so retry with the other known values while an engine started before or
     /// after the secret migration is still running.
@@ -672,7 +751,18 @@ impl Engine {
     ) -> Result<reqwest::blocking::Response> {
         let url = format!("http://127.0.0.1:{}{path}", self.controller);
         let send = |secret: &str| -> Result<reqwest::blocking::Response> {
-            let mut request = self.client.request(method.parse()?, &url);
+            let mut request =
+                self.client
+                    .request(method.parse()?, &url)
+                    .timeout(Duration::from_secs(if path.contains("/delay?") {
+                        9
+                    } else if method == "GET" {
+                        2
+                    } else if method == "DELETE" {
+                        1
+                    } else {
+                        6
+                    }));
             if !secret.is_empty() {
                 request = request.bearer_auth(secret);
             }
@@ -736,6 +826,96 @@ impl Engine {
             return Ok(Value::Null);
         }
         Ok(response.json()?)
+    }
+}
+pub struct Engine {
+    stop_requested: Arc<AtomicBool>,
+    pub store: Storage,
+    pub binary: PathBuf,
+    pub pid: Option<u32>,
+    pub owned: Option<u32>,
+    pub mixed: u16,
+    pub controller: u16,
+    /// Loopback inbound bound to the PROBE selector; 0 until configured.
+    pub probe: u16,
+    pub mode: String,
+    pub isolated: bool,
+    child: Option<Child>,
+    client: Client,
+    /// Controller secret the running engine is believed to accept.
+    secret: Arc<Mutex<String>>,
+    pub last_error: Option<String>,
+    pub started: Option<String>,
+    reload_attempts: AtomicU64,
+}
+impl Engine {
+    pub fn new(store: Storage, resources: PathBuf, isolated: bool) -> Result<Self> {
+        let mut e = Self {
+            stop_requested: Arc::new(AtomicBool::new(false)),
+            store,
+            binary: resources.join(if cfg!(windows) {
+                "mihomo.exe"
+            } else {
+                "mihomo"
+            }),
+            pid: None,
+            owned: None,
+            mixed: 7890,
+            controller: 9090,
+            probe: 0,
+            mode: "vpn".into(),
+            isolated,
+            child: None,
+            client: Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(6))
+                .build()?,
+            secret: Arc::new(Mutex::new(String::new())),
+            last_error: None,
+            started: None,
+            reload_attempts: AtomicU64::new(0),
+        };
+        if isolated {
+            if let Ok(port) = std::env::var("SPLITVPN_TEST_CONTROLLER_PORT") {
+                e.controller = port.parse()?;
+                ensure!(
+                    e.controller != 9090 && e.controller != 9091,
+                    "隔离控制器不能使用正式端口。"
+                );
+                e.mixed = std::env::var("SPLITVPN_TEST_MIXED_PORT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                e.probe = std::env::var("SPLITVPN_TEST_PROBE_PORT")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(e.mixed);
+                e.pid = Some(std::process::id());
+            }
+        } else {
+            let _ = e.attach();
+        }
+        Ok(e)
+    }
+    fn io(&self) -> ControllerIo {
+        ControllerIo {
+            store: self.store.clone(),
+            isolated: self.isolated,
+            controller: self.controller,
+            client: self.client.clone(),
+            secret: self.secret.clone(),
+        }
+    }
+    fn authorized(
+        &self,
+        method: &str,
+        path: &str,
+        payload: Option<&Value>,
+    ) -> Result<reqwest::blocking::Response> {
+        self.io().authorized(method, path, payload)
+    }
+    pub fn api(&self, method: &str, path: &str, payload: Option<&Value>) -> Result<Value> {
+        self.io().api(method, path, payload)
     }
     pub fn has_proxy(&self, name: &str) -> Result<bool> {
         let r = self.authorized("GET", &format!("/proxies/{}", encode(name)), None)?;
@@ -805,9 +985,15 @@ impl Engine {
     }
     /// Discard sockets bound to the departed path. Company sockets have their
     /// own tunnel recovery and are never closed by this personal VPN action.
-    fn close_departed_path_connections(&self) -> Result<()> {
+    fn close_departed_path_connections(&self, stop: &AtomicBool) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(3);
         let connections = self.api("GET", "/connections", None)?;
         for connection in connections["connections"].as_array().into_iter().flatten() {
+            ensure!(!stop.load(Ordering::SeqCst), "连接清理已被断开请求取消。");
+            ensure!(
+                Instant::now() < deadline,
+                "旧连接清理达到时间上限，等待下一次恢复。"
+            );
             let chains = connection["chains"].as_array();
             if chains.is_some_and(|items| {
                 items.iter().any(|name| {
@@ -834,25 +1020,11 @@ impl Engine {
         }
         Ok(())
     }
-    /// Points the check-only PROBE selector at `name` and returns its inbound
-    /// port. The user's VPN outlet is never touched.
-    fn select_probe(&self, name: &str) -> Result<u16> {
-        ensure!(
-            self.probe != 0 && self.has_proxy(config::PROBE)?,
-            "检测入口尚未就绪，请断开后重新连接 VPN。"
-        );
-        self.api(
-            "PUT",
-            &format!("/proxies/{}", config::PROBE),
-            Some(&json!({"name":name})),
-        )?;
-        Ok(self.probe)
-    }
     /// mihomo answers the controller before file providers finish loading;
     /// slow TUN setup on Windows widens that gap, so wait for the member.
     fn wait_for_vpn_member(&self, name: &str, timeout: Duration) {
         let deadline = Instant::now() + timeout;
-        while Instant::now() < deadline {
+        while Instant::now() < deadline && !self.stop_requested.load(Ordering::SeqCst) {
             let ready = self.api("GET", "/proxies/VPN", None).is_ok_and(|g| {
                 g["all"]
                     .as_array()
@@ -964,9 +1136,6 @@ impl Engine {
         self.pid = pid;
         if self.owned != pid {
             self.owned = None;
-        }
-        if pid.is_some() {
-            self.api("GET", "/version", None)?;
         }
         Ok(())
     }
@@ -1159,15 +1328,23 @@ pub struct Core {
     started: String,
     risk_key: String,
     samples: Vec<Value>,
+    live_proxies: Option<Value>,
+    traffic_snapshot: Value,
     last_totals: Option<(u64, u64, Instant)>,
     last_tick: Instant,
     network_recovery: NetworkRecovery,
     last_network_tick: Option<Instant>,
     last_health_tick: Option<Instant>,
+    last_sample_tick: Option<Instant>,
     health_pid: Option<u32>,
     health_failures: u32,
+    path_health: crate::path_health::PathHealth,
+    diagnostics: Diagnostics,
+    diagnostics_context: Option<DiagnosticToken>,
+    last_diagnostics_state: String,
     connection_health: ConnectionHealth,
     wechat_route: Option<&'static str>,
+    pending_wechat: Option<String>,
     environment: RuntimeEnvironment,
     revision: u64,
     wants_running: bool,
@@ -1188,6 +1365,7 @@ impl Core {
         jobs: Arc<Jobs>,
     ) -> Result<Self> {
         let mut engine = Engine::new(Storage::new(data), resources, isolated)?;
+        engine.stop_requested = jobs.stop_requested.clone();
         let mut company = Company::default();
         if !isolated {
             if let Err(e) = company.recover(&mut engine) {
@@ -1202,15 +1380,23 @@ impl Core {
             started: now(),
             risk_key: String::new(),
             samples: Vec::new(),
+            live_proxies: None,
+            traffic_snapshot: Value::Null,
             last_totals: None,
             last_tick: Instant::now(),
             network_recovery: NetworkRecovery::default(),
             last_network_tick: None,
             last_health_tick: None,
+            last_sample_tick: None,
             health_pid: None,
             health_failures: 0,
+            path_health: crate::path_health::PathHealth::default(),
+            diagnostics: Diagnostics::default(),
+            diagnostics_context: None,
+            last_diagnostics_state: String::new(),
             connection_health: ConnectionHealth::default(),
             wechat_route: None,
+            pending_wechat: None,
             environment: RuntimeEnvironment::default(),
             revision: 0,
             wants_running: false,
@@ -1256,6 +1442,7 @@ impl Core {
     fn runtime_status(&self) -> Value {
         let mut status = self.engine.status();
         status["networkRecovery"] = self.network_recovery.status();
+        status["connectionHealth"] = self.path_health.status();
         status
     }
     fn publish_runtime_status(&mut self) {
@@ -1264,6 +1451,7 @@ impl Core {
         if serialized != self.last_core_state {
             (self.events)("vpn:status", state);
             self.last_core_state = serialized;
+            self.publish_read_views();
         }
     }
     /// Detect an upgrade before automatic connection or any background reload.
@@ -1449,7 +1637,15 @@ impl Core {
             config::yaml(&json!({"payload":settings["vpnDomainRules"]}))?.as_bytes(),
         )?;
         platform::validate(&self.engine.binary, &self.engine.store, &text)?;
+        ensure!(
+            !self.jobs.stop_requested.load(Ordering::SeqCst),
+            "恢复已被断开请求取消。"
+        );
         self.company.reload_base(&mut self.engine, &text)?;
+        ensure!(
+            !self.jobs.stop_requested.load(Ordering::SeqCst),
+            "恢复已被断开请求取消。"
+        );
         self.engine
             .confirm_network_binding(interface.as_deref(), settings["tun"] == true)?;
         atomic_write(
@@ -1493,7 +1689,7 @@ impl Core {
         let s = self.engine.store.settings()?;
         let mut nodes = subscription::provider_nodes(&self.engine.store)?;
         let live = if self.engine.pid.is_some() {
-            self.engine.api("GET", "/proxies", None).ok()
+            self.live_proxies.as_ref()
         } else {
             None
         };
@@ -1501,50 +1697,16 @@ impl Core {
             .engine
             .store
             .read("runtime-state/speed-cache.json", json!({"entries":[]}))?;
+        let empty = Vec::new();
+        let cached = cache["entries"].as_array().unwrap_or(&empty);
         for n in &mut nodes {
             n["selected"] = json!(n["name"] == s["selectedProxy"]);
-            if let Some(live) = &live {
-                if let Some(p) = live["proxies"].get(n["name"].as_str().unwrap()) {
-                    n["type"] = p["type"].clone();
-                    if let Some(last) = p["history"].as_array().and_then(|a| a.last()) {
-                        n["delay"] = last["delay"].clone();
-                        n["available"] = json!(last["delay"].as_u64().unwrap_or(0) > 0);
-                    }
-                    n["runtimeUdpSupported"] = if p["udp"].is_boolean() {
-                        p["udp"].clone()
-                    } else {
-                        Value::Null
-                    };
-                }
+            let proxy = live.and_then(|v| v["proxies"].get(n["name"].as_str().unwrap()));
+            if let Some(proxy) = proxy {
+                n["type"] = proxy["type"].clone();
+                n["runtimeUdpSupported"] = proxy["udp"].clone();
             }
-            if n["delay"].is_null() {
-                if let Some(saved) = cache["entries"].as_array().and_then(|a| {
-                    a.iter().find(|e| {
-                        e["identityKey"] == n["identityKey"]
-                            && e["providerRevision"] == n["providerRevision"]
-                    })
-                }) {
-                    let fresh = saved["testedAt"]
-                        .as_str()
-                        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                        .is_some_and(|t| {
-                            (chrono::Utc::now() - t.with_timezone(&chrono::Utc)).num_minutes()
-                                < if saved["targetSetId"] == "default-latency" {
-                                    10
-                                } else {
-                                    30
-                                }
-                        });
-                    if fresh {
-                        n["delay"] = saved
-                            .get("medianDelayMs")
-                            .unwrap_or(&saved["medianMs"])
-                            .clone();
-                        n["available"] =
-                            json!(saved["status"] == "available" || saved["status"] == "success");
-                    }
-                }
-            }
+            crate::node_latency::apply(n, proxy, cached, chrono::Utc::now());
         }
         nodes.push(json!({"name":"DIRECT","type":"Direct","selected":s["selectedProxy"]=="DIRECT","delay":null,"available":true,"identityKey":null}));
         Ok(nodes)
@@ -1594,10 +1756,8 @@ impl Core {
             .clone())
     }
     fn bootstrap(&mut self) -> Result<Value> {
-        let _ = self.engine.attach();
-        self.check_helper_update();
         Ok(
-            json!({"status":self.status()?,"nodes":self.nodes()?,"groups":self.groups()?,"risks":self.risks()?,"traffic":self.traffic(),"legacyOwnerRunning":!self.engine.isolated&&platform::legacy_owner(),"previewOnly":false,"ownsRuntime":self.engine.pid.is_some()&&self.engine.pid==self.engine.owned,"companyRouting":self.company.state(),"dataDir":self.engine.store.root,"core":{"implementation":"rust","protocolVersion":1,"version":env!("CARGO_PKG_VERSION")}}),
+            json!({"status":self.status()?,"nodes":self.nodes()?,"groups":self.groups()?,"risks":self.risks()?,"traffic":self.traffic(),"legacyOwnerRunning":!self.engine.isolated&&platform::legacy_owner(),"previewOnly":false,"ownsRuntime":self.engine.pid.is_some()&&self.engine.pid==self.engine.owned,"companyRouting":self.company.state(),"dataDir":self.engine.store.root,"diagnostics":self.diagnostics.status(),"core":{"implementation":"rust","protocolVersion":1,"version":env!("CARGO_PKG_VERSION")}}),
         )
     }
     pub fn handle(&mut self, channel: &str, p: &Value) -> Result<Value> {
@@ -1626,6 +1786,7 @@ impl Core {
                 | "native:network-changed"
                 | "native:runtime-environment"
                 | "vpn:get-status"
+                | "diagnostics:get-state"
                 | "nodes:list"
                 | "node-groups:list"
                 | "subscription:get-status"
@@ -1663,14 +1824,20 @@ impl Core {
             "native:bootstrap" => self.bootstrap(),
             "native:startup-connect" => self.startup_connect(),
             "native:runtime-environment" => {
-                allowed_keys(p, &["sleeping", "lowPower", "networkEvents"])?;
-                for key in ["sleeping", "lowPower", "networkEvents"] {
+                allowed_keys(p, &["sleeping", "lowPower", "networkEvents", "visible"])?;
+                for key in ["sleeping", "lowPower", "networkEvents", "visible"] {
                     ensure!(
                         p.get(key).is_none_or(Value::is_boolean),
                         "运行环境参数需要是布尔值。"
                     );
                 }
                 let was_sleeping = self.environment.sleeping;
+                if let Some(visible) = p["visible"].as_bool() {
+                    if visible && self.environment.visible == Some(false) {
+                        self.last_sample_tick = None;
+                    }
+                    self.environment.visible = Some(visible);
+                }
                 if let Some(value) = p["sleeping"].as_bool() {
                     self.environment.sleeping = value;
                 }
@@ -1680,13 +1847,10 @@ impl Core {
                 if let Some(value) = p["networkEvents"].as_bool() {
                     self.environment.network_events = value;
                 }
-                if self.environment.sleeping {
-                    self.jobs.cancel_all();
+                if was_sleeping != self.environment.sleeping {
+                    self.jobs.invalidate_diagnostics();
                 }
-                if was_sleeping
-                    && !self.environment.sleeping
-                    && (self.wants_running || self.engine.owned.is_some())
-                {
+                if was_sleeping && !self.environment.sleeping && self.wants_running {
                     self.network_recovery.changed_for(None, "wake");
                     self.last_network_tick = None;
                     self.publish_runtime_status();
@@ -1695,7 +1859,10 @@ impl Core {
                 Ok(json!(true))
             }
             "native:network-changed" => {
-                if (self.engine.owned.is_some() || self.wants_running) && !self.engine.protected() {
+                if self.wants_running && !self.engine.protected() {
+                    self.path_health.invalidate();
+                    self.live_proxies = None;
+                    self.pending_wechat = None;
                     self.network_recovery.changed(p["available"].as_bool());
                     self.last_network_tick = None;
                     self.jobs.cancel_all();
@@ -1706,6 +1873,10 @@ impl Core {
             }
             "native:upgrade-helper" => self.update_connection_service(),
             "vpn:get-status" => self.status(),
+            "diagnostics:get-state" => {
+                self.sync_diagnostics();
+                Ok(self.diagnostics.status())
+            }
             "nodes:list" => Ok(json!(self.nodes()?)),
             "node-groups:list" => self.groups(),
             "subscription:get-status" => self.engine.store.subscription(),
@@ -1837,6 +2008,7 @@ impl Core {
                     "请先更新连接服务。"
                 );
                 self.network_recovery.changed_for(None, "manual-retry");
+                self.wants_running = true;
                 self.last_network_tick = None;
                 self.jobs.cancel_all();
                 self.jobs.wake_background();
@@ -1859,9 +2031,17 @@ impl Core {
                 result
             }
             "vpn:stop" => {
+                self.jobs.invalidate_diagnostics();
                 self.wants_running = false;
-                self.stop_runtime()?;
                 self.network_recovery.clear();
+                self.path_health.invalidate();
+                self.stop_runtime()?;
+                self.path_health = crate::path_health::PathHealth::default();
+                self.live_proxies = None;
+                self.pending_wechat = None;
+                self.last_totals = None;
+                self.health_failures = 0;
+                self.health_pid = None;
                 self.publish_company();
                 Ok(self.runtime_status())
             }
@@ -2630,6 +2810,10 @@ impl Core {
         }
     }
     fn start_vpn(&mut self, probe: bool) -> Result<Value> {
+        ensure!(
+            !self.jobs.stop_requested.load(Ordering::SeqCst),
+            "连接已被断开请求取消。"
+        );
         self.engine.attach()?;
         if !probe && !self.auto_starting {
             self.ensure_user_helper()?;
@@ -2701,12 +2885,24 @@ impl Core {
             config::yaml(&cfg)?.as_bytes(),
         )?;
         self.engine.mode = if probe { "subscription-probe" } else { "vpn" }.into();
+        ensure!(
+            !self.jobs.stop_requested.load(Ordering::SeqCst),
+            "连接已取消。"
+        );
         self.engine.start_authorized(!self.auto_starting)?;
+        ensure!(
+            !self.jobs.stop_requested.load(Ordering::SeqCst),
+            "连接已取消，正在断开。"
+        );
         self.wants_running = !probe;
         if !probe && self.engine.has_proxy("VPN")? {
             let selected = s["selectedProxy"].as_str().unwrap();
             self.engine
                 .wait_for_vpn_member(selected, Duration::from_secs(20));
+            ensure!(
+                !self.jobs.stop_requested.load(Ordering::SeqCst),
+                "连接已取消，正在断开。"
+            );
             if let Err(error) = self.engine.select(selected) {
                 let _ = self.engine.stop();
                 return Err(error);
@@ -2742,12 +2938,12 @@ impl Core {
             json!({"mihomo":self.runtime_status(),"controllerOk":true,"controllerError":null,"runtimePorts":{"mixedPort":self.engine.mixed,"externalControllerPort":self.engine.controller}}),
         )
     }
-    pub fn traffic(&mut self) -> Value {
+    fn accept_traffic(&mut self, result: Result<Value>) -> Value {
         let mut error = None;
         let mut snapshot = Value::Null;
         let mut rates = json!({"upload":0,"download":0});
         if self.engine.pid.is_some() {
-            match self.engine.api("GET", "/connections", None) {
+            match result {
                 Ok(v) => {
                     let up = v["uploadTotal"].as_u64().unwrap_or(0);
                     let down = v["downloadTotal"].as_u64().unwrap_or(0);
@@ -2769,6 +2965,19 @@ impl Core {
         }
         json!({"snapshot":snapshot,"rates":rates,"samples":self.samples,"running":self.engine.pid.is_some(),"updatedAt":now(),"error":error})
     }
+    pub fn traffic(&mut self) -> Value {
+        if self.traffic_snapshot.is_null() {
+            json!({"snapshot":null,"rates":{"upload":0,"download":0},"samples":[],"running":self.engine.pid.is_some(),"updatedAt":null,"error":null})
+        } else {
+            let mut value = self.traffic_snapshot.clone();
+            value["running"] = json!(self.engine.pid.is_some());
+            if self.engine.pid.is_none() {
+                value["snapshot"] = Value::Null;
+                value["rates"] = json!({"upload":0,"download":0});
+            }
+            value
+        }
+    }
     /// State a connectivity check needs, taken under the core lock so the
     /// network requests themselves run without it.
     pub fn network_check(&mut self) -> Result<NetworkCheck> {
@@ -2784,162 +2993,122 @@ impl Core {
             selected: settings["selectedProxy"].clone(),
         })
     }
-    pub fn speed(&mut self, name: &str, recommended: bool) -> Result<Value> {
-        let n = self
+    fn prepare_node_diagnostic(
+        &self,
+        name: &str,
+        kind: &str,
+        recommended: bool,
+    ) -> Result<NodeDiagnostic> {
+        ensure!(
+            !self.jobs.stop_requested.load(Ordering::SeqCst),
+            "检测已被断开请求取消。"
+        );
+        let node = self
             .nodes()?
             .into_iter()
-            .find(|n| n["name"] == name && n["identityKey"].is_string())
-            .context("节点不存在。");
-        let n = n?;
+            .find(|n| {
+                n["name"] == name
+                    && (n["identityKey"].is_string() || (kind == "risk" && name == "DIRECT"))
+            })
+            .context("节点不存在。")?;
         ensure!(
-            n["identityAmbiguous"] == false,
-            "同名节点不能进行可信测速。"
+            node["identityAmbiguous"] != true,
+            "同名节点不能进行可信检测。"
         );
         ensure!(self.engine.pid.is_some(), "请先连接 VPN。");
-        let before = self.engine.pid;
-        let mut samples = Vec::new();
-        let mut target_samples = Vec::new();
-        let config_before = fs::read(self.engine.store.path("mihomo/config.yaml")).ok();
-        let mut errors = Vec::new();
-        for _ in 0..if recommended { 3 } else { 1 } {
-            match self.engine.api(
-                "GET",
-                &format!(
-                    "/proxies/{}/delay?timeout=8000&url={}",
-                    encode(name),
-                    encode("https://www.gstatic.com/generate_204")
-                ),
-                None,
-            ) {
-                Ok(v) if v["delay"].as_u64().unwrap_or(0) > 0 => {
-                    samples.push(v["delay"].as_u64().unwrap());
-                    target_samples.push(json!({"targetId":"gstatic-204","delayMs":v["delay"],"transportOk":true,"expectedStatusMatched":null,"failureReason":null,"checkedAt":now()}));
-                }
-                Ok(_) => {
-                    errors.push("节点未返回有效延迟。".into());
-                    target_samples.push(json!({"targetId":"gstatic-204","delayMs":null,"transportOk":false,"expectedStatusMatched":null,"failureReason":"transport-error","checkedAt":now()}));
-                }
-                Err(e) => {
-                    errors.push(redact(&e.to_string()));
-                    target_samples.push(json!({"targetId":"gstatic-204","delayMs":null,"transportOk":false,"expectedStatusMatched":null,"failureReason":"transport-error","checkedAt":now()}));
-                }
-            }
+        let mut endpoint = None;
+        if kind == "risk" {
+            ensure!(
+                !self.risk_key.is_empty(),
+                "请先在风险页面配置 ipdata 密钥。"
+            );
+            let settings = self.engine.store.settings()?;
+            ensure!(
+                settings["vpnDomainRules"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("DOMAIN-SUFFIX,ipdata.co")),
+                "请先将 ipdata.co 加入 VPN 分流。"
+            );
+            endpoint = Some(if self.engine.isolated {
+                url::Url::parse(&network::fixture_url("SPLITVPN_TEST_IPDATA_URL")?)?
+            } else {
+                url::Url::parse("https://api.ipdata.co/")?
+            });
         }
-        samples.sort_unstable();
-        self.engine.attach()?;
-        let changed = before != self.engine.pid
-            || config_before != fs::read(self.engine.store.path("mihomo/config.yaml")).ok();
-        let median = samples.get(samples.len() / 2).copied();
-        let result = json!({"identityKey":n["identityKey"],"nodeName":name,"runtimeName":name,"targetSetId":if recommended{"recommended-latency"}else{"default-latency"},"targetSetVersion":1,"status":if changed{"runtime-changed"}else if median.is_none(){"unreachable"}else if recommended && samples.len()<2{"unstable"}else{"available"},"medianDelayMs":if changed{None}else{median},"medianMs":if changed{None}else{median},"delay":median,"p95Ms":samples.last(),"samples":target_samples,"results":[],"error":errors.first(),"errors":errors,"checkedAt":now(),"schemaVersion":1,"providerRevision":n["providerRevision"],"testedAt":now()});
-        if !changed {
+        Ok(NodeDiagnostic {
+            io: self.engine.io(),
+            node,
+            name: name.into(),
+            kind: kind.into(),
+            recommended,
+            probe: self.engine.probe,
+            risk_key: self.risk_key.clone(),
+            endpoint,
+            token: self.diagnostic_token(),
+            jobs: self.jobs.clone(),
+        })
+    }
+    fn finish_node_diagnostic(
+        &mut self,
+        plan: &NodeDiagnostic,
+        mut result: Value,
+    ) -> Result<Value> {
+        if !self.diagnostic_current(&plan.token) {
+            ensure!(plan.kind == "speed", "连接已变化，检测结果已丢弃。");
+            result["status"] = json!("runtime-changed");
+            result["delay"] = Value::Null;
+            result["medianDelayMs"] = Value::Null;
+            result["medianMs"] = Value::Null;
+            result["ok"] = json!(false);
+            result["error"] = json!("连接已变化，检测结果已丢弃。");
+            return Ok(result);
+        }
+        if plan.kind == "speed" {
             let mut cache = self.engine.store.read(
                 "runtime-state/speed-cache.json",
                 json!({"schemaVersion":1,"entries":[]}),
             )?;
-            let es = cache["entries"]
+            let entries = cache["entries"]
                 .as_array_mut()
                 .context("测速缓存格式无效。")?;
-            es.retain(|e| {
-                !(e["identityKey"] == n["identityKey"] && e["targetSetId"] == result["targetSetId"])
+            entries.retain(|e| {
+                !(e["identityKey"] == plan.node["identityKey"]
+                    && e["targetSetId"] == result["targetSetId"])
             });
-            es.insert(0, result.clone());
-            es.truncate(500);
+            entries.insert(0, result.clone());
+            entries.truncate(500);
             self.engine
                 .store
                 .write("runtime-state/speed-cache.json", &cache)?;
+        } else if plan.kind == "risk" {
+            let mut cache = self
+                .engine
+                .store
+                .read("ipdata-risk-cache.json", json!({"version":1,"entries":[]}))?;
+            let entries = cache["entries"]
+                .as_array_mut()
+                .context("风险缓存格式无效。")?;
+            entries.retain(|e| e["nodeName"] != plan.name);
+            entries.insert(0, result.clone());
+            self.engine.store.write("ipdata-risk-cache.json", &cache)?;
         }
         Ok(result)
+    }
+    pub fn speed(&mut self, name: &str, recommended: bool) -> Result<Value> {
+        let plan = self.prepare_node_diagnostic(name, "speed", recommended)?;
+        let result = plan.measure()?;
+        self.finish_node_diagnostic(&plan, result)
     }
     pub fn risk(&mut self, name: &str) -> Result<Value> {
-        ensure!(
-            !self.risk_key.is_empty(),
-            "请先在风险页面配置 ipdata 密钥。"
-        );
-        let s = self.engine.store.settings()?;
-        ensure!(
-            s["vpnDomainRules"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("DOMAIN-SUFFIX,ipdata.co")),
-            "请先将 ipdata.co 加入 VPN 分流。"
-        );
-        ensure!(self.engine.pid.is_some(), "请先连接 VPN。");
-        let endpoint = if self.engine.isolated {
-            let raw =
-                std::env::var("SPLITVPN_TEST_IPDATA_URL").context("隔离检测需要回环测试端点。")?;
-            let url = url::Url::parse(&raw)?;
-            ensure!(
-                url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1" | "::1")),
-                "隔离测试端点必须为回环地址。"
-            );
-            url
-        } else {
-            url::Url::parse("https://api.ipdata.co/")?
-        };
-        ensure!(
-            name == "DIRECT"
-                || subscription::provider_nodes(&self.engine.store)?
-                    .iter()
-                    .any(|n| n["name"] == name && n["identityAmbiguous"] == false),
-            "节点不存在或存在同名冲突。"
-        );
-        let port = self.engine.select_probe(name)?;
-        let result = (|| -> Result<Value> {
-            let mut v: Value = proxied(port, 15)?
-                .get(endpoint.clone())
-                .query(&[("api-key", &self.risk_key)])
-                .send()?
-                .error_for_status()?
-                .json()?;
-            ensure!(v["ip"].as_str().is_some(), "风险服务未返回出口 IP。");
-            if v["threat"].is_null() {
-                let threat: Value = proxied(port, 15)?
-                    .get(endpoint.join(&format!("{}/threat", encode(v["ip"].as_str().unwrap())))?)
-                    .query(&[("api-key", &self.risk_key)])
-                    .send()?
-                    .error_for_status()?
-                    .json()?;
-                v["threat"] = threat.get("threat").unwrap_or(&threat).clone();
-                if v["scores"].is_null() {
-                    v["scores"] = threat["scores"].clone();
-                }
-            }
-            Ok(risk_result(name, &v))
-        })();
-        let result = result?;
-        let mut cache = self
-            .engine
-            .store
-            .read("ipdata-risk-cache.json", json!({"version":1,"entries":[]}))?;
-        let a = cache["entries"]
-            .as_array_mut()
-            .context("风险缓存格式无效。")?;
-        a.retain(|e| e["nodeName"] != name);
-        a.insert(0, result.clone());
-        self.engine.store.write("ipdata-risk-cache.json", &cache)?;
-        Ok(result)
+        let plan = self.prepare_node_diagnostic(name, "risk", false)?;
+        let result = plan.measure()?;
+        self.finish_node_diagnostic(&plan, result)
     }
     pub fn udp(&mut self, name: &str) -> Result<Value> {
-        let n = self
-            .nodes()?
-            .into_iter()
-            .find(|n| n["name"] == name && n["identityKey"].is_string())
-            .context("节点不存在。");
-        let n = n?;
-        ensure!(
-            n["identityAmbiguous"] == false,
-            "同名节点不能进行可信探测。"
-        );
-        if n["runtimeUdpSupported"] != true {
-            return Ok(
-                json!({"nodeName":name,"supported":false,"ok":false,"error":"此节点不支持 UDP，未发送探测。","checkedAt":now()}),
-            );
-        }
-        ensure!(self.engine.pid.is_some(), "请先连接 VPN。");
-        let result = udp_stun(self.engine.select_probe(name)?);
-        Ok(
-            json!({"nodeName":name,"supported":result.is_ok(),"ok":result.is_ok(),"error":result.err().map(|e|redact(&e.to_string())),"checkedAt":now()}),
-        )
+        let plan = self.prepare_node_diagnostic(name, "udp", false)?;
+        let result = plan.measure()?;
+        self.finish_node_diagnostic(&plan, result)
     }
     fn diagnose(&self, target: &str) -> Result<Value> {
         crate::routing::diagnose(&self.engine.store.settings()?, target)
@@ -2978,51 +3147,197 @@ impl Core {
     }
     /// All diagnostics below use fixed categories, never upstream error text,
     /// socket IDs, hostnames, process paths, node names or addresses.
-    fn check_connection_health(&mut self) {
+    fn diagnostic_token(&self) -> DiagnosticToken {
+        DiagnosticToken {
+            epoch: self.jobs.intent_epoch.load(Ordering::SeqCst),
+            revision: self.revision,
+            pid: self.engine.pid,
+            config: fs::read(self.engine.store.path("mihomo/config.yaml")).ok(),
+        }
+    }
+    fn diagnostic_current(&self, token: &DiagnosticToken) -> bool {
+        !self.jobs.shutdown.load(Ordering::SeqCst)
+            && !self.jobs.stop_requested.load(Ordering::SeqCst)
+            && *token == self.diagnostic_token()
+    }
+    fn sync_diagnostics(&mut self) {
+        let token = self.diagnostic_token();
+        if self.diagnostics_context.as_ref() != Some(&token) {
+            self.diagnostics.invalidate();
+            self.diagnostics_context = Some(token);
+        }
+        let recovery = self.network_recovery.status();
+        let paused = if self.environment.sleeping {
+            Some("sleeping")
+        } else if self.jobs.stop_requested.load(Ordering::SeqCst)
+            || !self.wants_running
+            || self.engine.pid.is_none()
+            || self.engine.owned != self.engine.pid
+        {
+            Some("disconnected")
+        } else if matches!(
+            recovery["state"].as_str(),
+            Some("waiting-network" | "recovering" | "helper-update-required")
+        ) || self.network_recovery.needs_fast_check()
+        {
+            Some("recovering")
+        } else if self.jobs.speed_active.load(Ordering::SeqCst)
+            || self.jobs.risk_active.load(Ordering::SeqCst)
+            || self.jobs.udp_active.load(Ordering::SeqCst)
+        {
+            Some("node-test")
+        } else {
+            None
+        };
+        self.diagnostics
+            .environment(paused, self.environment.low_power, Instant::now());
+    }
+    fn begin_diagnostic(&mut self, kind: CheckKind, manual: bool) -> Result<DiagnosticRequest> {
+        let check = self.network_check()?;
+        self.sync_diagnostics();
+        let id = self
+            .diagnostics
+            .claim(kind, manual)
+            .map_err(anyhow::Error::msg)?;
+        let plan = DiagnosticRequest {
+            kind,
+            id,
+            check,
+            token: self.diagnostic_token(),
+            jobs: self.jobs.clone(),
+        };
+        self.publish_read_views();
+        Ok(plan)
+    }
+    pub fn take_due_diagnostic(&mut self) -> Option<DiagnosticRequest> {
+        self.sync_diagnostics();
+        if self.engine.isolated
+            || self.jobs.shutdown.load(Ordering::SeqCst)
+            || self.jobs.speed_active.load(Ordering::SeqCst)
+            || self.jobs.risk_active.load(Ordering::SeqCst)
+            || self.jobs.udp_active.load(Ordering::SeqCst)
+        {
+            return None;
+        }
+        let kind = self.diagnostics.due(Instant::now())?;
+        self.begin_diagnostic(kind, false).ok()
+    }
+    fn complete_diagnostic(
+        &mut self,
+        plan: &DiagnosticRequest,
+        result: Result<Value>,
+    ) -> Result<Value> {
+        self.sync_diagnostics();
+        if !self.diagnostic_current(&plan.token) {
+            self.publish_read_views();
+            bail!("连接已变化，检测结果已丢弃。");
+        }
+        let record = result
+            .as_ref()
+            .map(Clone::clone)
+            .map_err(|e| redact(&e.to_string()));
+        let accepted = self
+            .diagnostics
+            .finish(plan.kind, plan.id, record, Instant::now());
+        self.publish_read_views();
+        ensure!(accepted, "检测结果已过期，未覆盖新的检测状态。");
+        result
+    }
+    pub fn publish_read_views(&mut self) {
+        self.sync_diagnostics();
+        let diagnostics = self.diagnostics.status();
+        let serialized = diagnostics.to_string();
+        if serialized != self.last_diagnostics_state {
+            (self.events)("diagnostics:updated", diagnostics.clone());
+            self.last_diagnostics_state = serialized;
+        }
+        let Ok(bootstrap) = self.bootstrap() else {
+            return;
+        };
+        let views = [
+            ("vpn:get-status", bootstrap["status"].clone()),
+            ("diagnostics:get-state", diagnostics),
+            ("nodes:list", bootstrap["nodes"].clone()),
+            ("node-groups:list", bootstrap["groups"].clone()),
+            ("traffic:get-monitor", bootstrap["traffic"].clone()),
+            (
+                "traffic:get-snapshot",
+                bootstrap["traffic"]["snapshot"].clone(),
+            ),
+            ("native:bootstrap", bootstrap),
+        ];
+        if let Ok(mut cache) = self.jobs.read_views.lock() {
+            for (channel, mut value) in views {
+                if value.is_object() {
+                    value["snapshotAt"] = json!(now());
+                }
+                cache.insert(channel.into(), value);
+            }
+        }
+    }
+    pub fn take_background_sample(&mut self) -> Option<BackgroundSample> {
+        if self.environment.sleeping
+            || self.engine.pid.is_none()
+            || self.jobs.stop_requested.load(Ordering::SeqCst)
+        {
+            return None;
+        }
+        let health = self.wants_running
+            && self.engine.owned == self.engine.pid
+            && self.network_recovery.status()["state"] == "ready"
+            && (self.network_recovery.needs_verification()
+                || self
+                    .last_health_tick
+                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(30)));
+        if !health
+            && self
+                .last_sample_tick
+                .is_some_and(|t| t.elapsed() < self.environment.sample_interval())
+        {
+            return None;
+        }
+        self.last_sample_tick = Some(Instant::now());
+        let recovery_id = if !self.engine.isolated {
+            self.network_recovery.take_check()
+        } else {
+            None
+        };
+        if health {
+            self.last_health_tick = Some(Instant::now());
+        }
+        let settings = self.engine.store.settings().ok()?;
+        Some(BackgroundSample {
+            io: self.engine.io(),
+            token: self.diagnostic_token(),
+            health,
+            recovery_id,
+            retry_socket: self.pending_wechat.take(),
+            isolated: self.engine.isolated,
+            tun: settings["tun"] == true,
+            selected: settings["selectedProxy"]
+                .as_str()
+                .unwrap_or("DIRECT")
+                .into(),
+            probe: self.engine.probe,
+            jobs: self.jobs.clone(),
+            wechat: settings["specialCompatibilityRules"]["wechatImageSendFallback"] == true,
+        })
+    }
+    pub fn complete_background_sample(&mut self, sample: &BackgroundSample, result: SampleResult) {
+        if !self.diagnostic_current(&sample.token) {
+            return;
+        }
         if self.health_pid != self.engine.pid {
             self.health_pid = self.engine.pid;
             self.connection_health = ConnectionHealth::default();
-            self.last_health_tick = None;
             self.health_failures = 0;
             self.wechat_route = None;
+            self.last_totals = None;
         }
-        if self.engine.pid.is_none()
-            || self.engine.owned != self.engine.pid
-            || self.network_recovery.status()["state"] != "ready"
-            || self
-                .last_health_tick
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(30))
-        {
-            // Never carry suspected stalls across a physical network recovery.
-            if self.network_recovery.status()["state"] != "ready" {
-                self.connection_health = ConnectionHealth::default();
-            }
-            return;
-        }
-        let now = Instant::now();
-        self.last_health_tick = Some(now);
-        let Ok(settings) = self.engine.store.settings() else {
-            return;
-        };
-        let context = platform::context().ok();
-        // Missing physical connectivity belongs to the existing path monitor.
-        let Some(context) = context else { return };
-        let healthy = self
-            .engine
-            .confirm_network_binding(context["interfaceName"].as_str(), settings["tun"] == true)
-            .is_ok();
-        self.record_tunnel_health(healthy);
-        if !healthy {
-            self.connection_health.observe(&Value::Null, now);
-            return;
-        }
-        if settings["specialCompatibilityRules"]["wechatImageSendFallback"] != true {
-            self.connection_health = ConnectionHealth::default();
-            self.wechat_route = None;
-            return;
-        }
-        if let Ok(group) = self.engine.api("GET", "/proxies/WECHAT", None) {
-            let route = match group["now"].as_str() {
+        self.live_proxies = result.proxies.ok();
+        if sample.wechat && sample.health {
+            let group = self.live_proxies.as_ref().map(|v| &v["proxies"]["WECHAT"]);
+            let route = match group.and_then(|g| g["now"].as_str()) {
                 Some("DIRECT") => "direct",
                 Some("VPN") => "proxy",
                 _ => "unknown",
@@ -3035,12 +3350,65 @@ impl Core {
                 self.wechat_route = Some(route);
             }
         }
-        let snapshot = self
-            .engine
-            .api("GET", "/connections", None)
+        let snapshot = result
+            .connections
+            .as_ref()
+            .ok()
+            .cloned()
             .unwrap_or(Value::Null);
-        if let Some(id) = self.connection_health.observe(&snapshot, now) {
-            self.retry_wechat_connection(&id);
+        self.traffic_snapshot = self.accept_traffic(result.connections);
+        if let Some(outcome) = result.retry_outcome {
+            self.log(
+                "info",
+                &format!("connection-health scope=wechat outcome={outcome}"),
+            );
+        }
+        if sample.health {
+            if let Some(id) = sample.recovery_id {
+                if result.path == crate::path_health::PathOutcome::Skipped
+                    && result.controller == Some(true)
+                    && sample.selected != "DIRECT"
+                {
+                    self.network_recovery.defer_check(id);
+                } else {
+                    self.network_recovery
+                        .checked(id, result.path == crate::path_health::PathOutcome::Healthy);
+                }
+            }
+            if let Some(healthy) = result.controller {
+                self.record_tunnel_health(healthy);
+            }
+            self.accept_path_health(result.path);
+            if sample.wechat && result.controller == Some(true) {
+                if let Some(id) = self.connection_health.observe(&snapshot, Instant::now()) {
+                    self.log("warn", "connection-health scope=wechat reason=no-response-120s quiet=30s outcome=targeted-retry-requested");
+                    self.pending_wechat = Some(id);
+                }
+            } else {
+                self.connection_health = ConnectionHealth::default();
+            }
+        }
+        self.publish_runtime_status();
+        self.publish_read_views();
+    }
+    fn accept_path_health(&mut self, outcome: crate::path_health::PathOutcome) {
+        use crate::path_health::{PathAction, PathOutcome};
+        let action = self.path_health.observe(outcome, Instant::now());
+        match action {
+            PathAction::None => {}
+            PathAction::Recheck => {
+                self.last_health_tick = Some(Instant::now() - Duration::from_secs(25))
+            }
+            PathAction::Recover => {
+                let reason = if outcome == PathOutcome::DnsFailure {
+                    "dns-health"
+                } else {
+                    "egress-health"
+                };
+                self.network_recovery.changed_for(None, reason);
+                self.last_network_tick = None;
+                self.jobs.wake_background();
+            }
         }
     }
     fn record_tunnel_health(&mut self, healthy: bool) {
@@ -3055,6 +3423,9 @@ impl Core {
             return;
         }
         self.health_failures = self.health_failures.saturating_add(1);
+        if self.health_failures < 3 {
+            self.last_health_tick = Some(Instant::now() - Duration::from_secs(25));
+        }
         if self.health_failures == 1 {
             self.log(
                 "warn",
@@ -3067,6 +3438,7 @@ impl Core {
             self.last_network_tick = None;
         }
     }
+    #[cfg(test)]
     fn retry_wechat_connection(&self, id: &str) {
         self.log("warn", "connection-health scope=wechat reason=no-response-120s quiet=30s outcome=targeted-retry-requested");
         let result =
@@ -3085,6 +3457,7 @@ impl Core {
 
     pub fn tick(&mut self) {
         if self.environment.sleeping
+            || self.jobs.stop_requested.load(Ordering::SeqCst)
             || self.jobs.shutdown.load(Ordering::SeqCst)
             || self.assert_company_owner().is_err()
         {
@@ -3111,9 +3484,8 @@ impl Core {
         if self.wants_running && self.engine.pid.is_some() && self.engine.owned != self.engine.pid {
             self.wants_running = false;
         }
-        self.check_connection_health();
         self.publish_runtime_status();
-        if (self.engine.owned.is_some() || self.wants_running)
+        if self.wants_running
             && self.last_network_tick.is_none_or(|time| {
                 time.elapsed()
                     >= self
@@ -3161,38 +3533,51 @@ impl Core {
             self.publish_runtime_status();
         }
     }
-    pub fn take_recovery_check(&mut self) -> Option<(u64, u32, NetworkCheck)> {
-        if self.engine.isolated
-            || self.environment.sleeping
-            || self.jobs.shutdown.load(Ordering::SeqCst)
-        {
-            return None;
-        }
-        let id = self.network_recovery.take_check()?;
-        let pid = self.engine.pid?;
-        match self.network_check() {
-            Ok(check) => Some((id, pid, check)),
-            Err(_) => {
-                self.network_recovery.checked(id, false);
-                self.publish_runtime_status();
-                None
-            }
-        }
-    }
-    pub fn complete_recovery_check(&mut self, id: u64, pid: u32, ok: bool) {
-        if self.engine.pid == Some(pid) && !self.jobs.shutdown.load(Ordering::SeqCst) {
-            self.network_recovery.checked(id, ok);
-            self.publish_runtime_status();
-        }
-    }
-
     fn recover_network(&mut self, context: &Value) -> Result<()> {
         let retry_state = self.network_recovery.clone();
+        let same_path = self
+            .network_recovery
+            .same_path(context["signature"].as_str());
+        use crate::network_recovery::RecoveryAction;
+        let can_restart = self.engine.owned.is_some()
+            && self.engine.owned == self.engine.pid
+            && !self.company.state()["proxyName"].is_string();
+        let action =
+            self.network_recovery
+                .action(same_path, cfg!(target_os = "macos"), can_restart);
+        if action == RecoveryAction::RefreshDns {
+            ensure!(
+                !self.jobs.stop_requested.load(Ordering::SeqCst),
+                "恢复已取消。"
+            );
+            self.engine.refresh_dns()?;
+            self.network_recovery
+                .applied(context["signature"].as_str().map(str::to_owned));
+            return Ok(());
+        }
+        // A failed reload of an owned, unhealthy controller may escalate once.
+        // Company routing requires an independent recovery and must be preserved.
+        if action == RecoveryAction::Restart {
+            ensure!(
+                !self.jobs.stop_requested.load(Ordering::SeqCst),
+                "恢复已取消。"
+            );
+            self.engine.stop()?;
+            self.auto_starting = true;
+            let result = self.start_vpn(false).map(|_| ());
+            self.auto_starting = false;
+            return result;
+        }
         let settings = self.engine.store.settings()?;
         self.transaction(|core| core.apply_config_in_context(&settings, context))?;
-        if let Err(error) = self.engine.close_departed_path_connections() {
-            self.network_recovery = retry_state;
-            return Err(error);
+        if !same_path {
+            if let Err(error) = self
+                .engine
+                .close_departed_path_connections(&self.jobs.stop_requested)
+            {
+                self.network_recovery = retry_state;
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -3338,32 +3723,11 @@ impl NetworkCheck {
         ensure!(self.running, "请先连接 VPN。");
         proxied(self.mixed, timeout)
     }
-    /// One bounded proxy request, without switching nodes or probing private resources.
-    pub fn recovery_connectivity(&self) -> bool {
-        if self.isolated {
-            return false;
-        }
-        let result = (|| -> Result<bool> {
-            ensure!(self.running, "内核未运行。");
-            let client = Client::builder()
-                .no_proxy()
-                .pool_max_idle_per_host(0)
-                .timeout(Duration::from_secs(8))
-                .redirect(reqwest::redirect::Policy::none())
-                .proxy(reqwest::Proxy::all(format!(
-                    "http://127.0.0.1:{}",
-                    self.mixed
-                ))?)
-                .build()?;
-            Ok(client
-                .get("https://www.gstatic.com/generate_204")
-                .send()?
-                .status()
-                == 204)
-        })();
-        result.unwrap_or(false)
-    }
     pub fn connectivity(&self) -> Result<Value> {
+        self.connectivity_with(|| true)
+    }
+    fn connectivity_with(&self, current: impl Fn() -> bool) -> Result<Value> {
+        ensure!(current(), "连接已变化，检测已取消。");
         let test_url = if self.isolated {
             Some(network::fixture_url("SPLITVPN_TEST_CONNECTIVITY_URL")?)
         } else {
@@ -3398,6 +3762,7 @@ impl NetworkCheck {
                 web.join().unwrap(),
             )
         });
+        ensure!(current(), "连接已变化，检测已取消。");
         let ip = if self.isolated {
             Value::Null
         } else {
@@ -3414,7 +3779,7 @@ impl NetworkCheck {
                 .unwrap_or(Value::Null)
         };
         Ok(
-            json!({"connectivity":network::complete_connectivity(&domestic,&foreign,&dns,&chatgpt,ip),"nodeRisk":null,"nodeRiskError":null}),
+            json!({"connectivity":network::complete_connectivity(&domestic,&foreign,&dns,&chatgpt,ip),"nodeRisk":null,"nodeRiskError":null,"checkedAt":now()}),
         )
     }
     fn measure(&self, url: &str, proxy: bool) -> Value {
@@ -3428,10 +3793,26 @@ impl NetworkCheck {
                 .build()
                 .map_err(Into::into)
         };
-        let result = client.and_then(|c| Ok(c.get(url).send()?.error_for_status()?));
-        json!({"url":url,"ok":result.is_ok(),"delay":if result.is_ok(){json!(start.elapsed().as_millis())}else{Value::Null},"error":result.err().map(|e|redact(&e.to_string()))})
+        match client.and_then(|c| Ok(c.get(url).send()?)) {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                let ok = response.status().is_success();
+                let elapsed = start.elapsed().as_millis();
+                json!({"url":url,"ok":ok,"delay":if ok {json!(elapsed)}else{Value::Null},"responseMs":elapsed,
+                    "httpStatus":status,"failureReason":if ok {None}else{Some(if matches!(status,403|429|451){"restricted"}else{"http-status"})},
+                    "error":if ok {None}else{Some(format!("站点返回 HTTP {status}。"))},"checkedAt":now()})
+            }
+            Err(error) => {
+                json!({"url":url,"ok":false,"delay":null,"responseMs":null,"httpStatus":null,
+                "failureReason":crate::diagnostics::failure_kind(&error),"error":redact(&error.to_string()),"checkedAt":now()})
+            }
+        }
     }
+
     pub fn websites(&self) -> Result<Value> {
+        self.websites_with(|| true)
+    }
+    fn websites_with(&self, current: impl Fn() -> bool) -> Result<Value> {
         ensure!(self.running, "请先连接 VPN。");
         let mut results = Vec::new();
         for (id, label, url) in [
@@ -3439,12 +3820,20 @@ impl NetworkCheck {
             ("chatgpt", "ChatGPT", "https://chatgpt.com/cdn-cgi/trace"),
             ("claude", "Claude", "https://claude.ai"),
         ] {
+            ensure!(current(), "连接已变化，检测已取消。");
+            let fixture;
+            let url = if self.isolated {
+                fixture = network::fixture_url("SPLITVPN_TEST_CONNECTIVITY_URL")?;
+                fixture.as_str()
+            } else {
+                url
+            };
             let mut v = self.measure(url, true);
             v["id"] = json!(id);
             v["label"] = json!(label);
             results.push(v);
         }
-        Ok(json!({"proxyName":self.selected,"results":results}))
+        Ok(json!({"proxyName":self.selected,"results":results,"checkedAt":now()}))
     }
 }
 fn system_website(url: &str) -> Value {
@@ -3467,22 +3856,359 @@ fn system_website(url: &str) -> Value {
     }
 }
 /// Preflight stays in RPC order; only network IO moves to another thread.
+#[derive(Clone, PartialEq)]
+struct DiagnosticToken {
+    epoch: u64,
+    revision: u64,
+    pid: Option<u32>,
+    config: Option<Vec<u8>>,
+}
+
+pub struct NodeDiagnostic {
+    io: ControllerIo,
+    node: Value,
+    name: String,
+    kind: String,
+    recommended: bool,
+    probe: u16,
+    risk_key: String,
+    endpoint: Option<url::Url>,
+    token: DiagnosticToken,
+    jobs: Arc<Jobs>,
+}
+impl NodeDiagnostic {
+    fn check_current(&self) -> Result<()> {
+        ensure!(
+            !self.jobs.shutdown.load(Ordering::SeqCst)
+                && !self.jobs.stop_requested.load(Ordering::SeqCst)
+                && self.jobs.intent_epoch.load(Ordering::SeqCst) == self.token.epoch,
+            "检测已取消。"
+        );
+        Ok(())
+    }
+    fn measure(&self) -> Result<Value> {
+        self.check_current()?;
+        if self.kind == "speed" {
+            return self.latency();
+        }
+        if self.kind == "udp" {
+            let live = self.io.api("GET", "/proxies", None)?;
+            let supported = live["proxies"][&self.name]["udp"]
+                .as_bool()
+                .context("尚未确认内核的 UDP 能力，请稍后重试。")?;
+            if !supported {
+                return Ok(
+                    json!({"nodeName":self.name,"supported":false,"ok":false,"error":"此节点不支持 UDP，未发送探测。","checkedAt":now()}),
+                );
+            }
+        }
+        // The selector belongs to the probe listener. Never hold the core lock
+        // while waiting for this lease or while sending traffic through it.
+        let _lease = self
+            .jobs
+            .probe_gate
+            .try_lock()
+            .map_err(|_| anyhow::anyhow!("检测入口正在使用，请稍后重试。"))?;
+        ensure!(self.probe != 0, "检测入口尚未就绪，请断开后重新连接 VPN。");
+        self.io
+            .api("PUT", "/proxies/PROBE", Some(&json!({"name":self.name})))?;
+        let port = self.probe;
+        if self.kind == "udp" {
+            let result = udp_stun(port);
+            return Ok(
+                json!({"nodeName":self.name,"supported":result.is_ok(),"ok":result.is_ok(),"error":result.err().map(|e|redact(&e.to_string())),"checkedAt":now()}),
+            );
+        }
+        let result = (|| -> Result<Value> {
+            let mut v: Value = proxied(port, 15)?
+                .get(self.endpoint.clone().unwrap())
+                .query(&[("api-key", &self.risk_key)])
+                .send()?
+                .error_for_status()?
+                .json()?;
+            ensure!(v["ip"].as_str().is_some(), "风险服务未返回出口 IP。");
+            if v["threat"].is_null() {
+                self.check_current()?;
+                let threat: Value = proxied(port, 15)?
+                    .get(
+                        self.endpoint
+                            .as_ref()
+                            .unwrap()
+                            .join(&format!("{}/threat", encode(v["ip"].as_str().unwrap())))?,
+                    )
+                    .query(&[("api-key", &self.risk_key)])
+                    .send()?
+                    .error_for_status()?
+                    .json()?;
+                v["threat"] = threat.get("threat").unwrap_or(&threat).clone();
+                if v["scores"].is_null() {
+                    v["scores"] = threat["scores"].clone();
+                }
+            }
+            Ok(risk_result(&self.name, &v))
+        })();
+        let result = result?;
+        Ok(result)
+    }
+    fn latency(&self) -> Result<Value> {
+        let targets = [
+            (
+                "gstatic-204",
+                "Google",
+                "https://www.gstatic.com/generate_204",
+            ),
+            (
+                "apple-success",
+                "Apple",
+                "https://www.apple.com/library/test/success.html",
+            ),
+            (
+                "chatgpt-trace",
+                "ChatGPT",
+                "https://chatgpt.com/cdn-cgi/trace",
+            ),
+        ];
+        let targets = &targets[..if self.recommended { 3 } else { 1 }];
+        let mut samples = Vec::new();
+        let mut target_samples = Vec::new();
+        let mut errors = Vec::new();
+        let mut failure = "transport-error";
+        for (id, label, url) in targets {
+            self.check_current()?;
+            let value = self.io.api(
+                "GET",
+                &format!(
+                    "/proxies/{}/delay?timeout=8000&url={}",
+                    encode(&self.name),
+                    encode(url)
+                ),
+                None,
+            );
+            match value {
+                Ok(v) if v["delay"].as_u64().unwrap_or(0) > 0 => {
+                    samples.push(v["delay"].as_u64().unwrap());
+                    target_samples.push(json!({"targetId":id,"label":label,"delayMs":v["delay"],"transportOk":true,"expectedStatusMatched":null,"failureReason":null,"checkedAt":now()}));
+                }
+                value => {
+                    let error = match value {
+                        Err(error) => error,
+                        _ => anyhow::anyhow!("节点未返回有效延迟。"),
+                    };
+                    let kind = crate::diagnostics::failure_kind(&error);
+                    if kind == "timeout" {
+                        failure = kind;
+                    }
+                    errors.push(redact(&error.to_string()));
+                    target_samples.push(json!({"targetId":id,"label":label,"delayMs":null,"transportOk":false,"expectedStatusMatched":null,"failureReason":kind,"checkedAt":now()}));
+                }
+            }
+        }
+        samples.sort_unstable();
+        let median = samples.get(samples.len() / 2).copied();
+        Ok(
+            json!({"identityKey":self.node["identityKey"],"nodeName":self.name,"runtimeName":self.name,
+            "targetSetId":if self.recommended {"recommended-latency"}else{"default-latency"},"targetSetVersion":2,
+            "status":if median.is_none(){if failure=="timeout" {"timeout"}else{"unreachable"}}else if samples.len()<targets.len(){"unstable"}else{"available"},
+            "failureReason":if errors.is_empty(){Value::Null}else{json!(failure)},
+            "medianDelayMs":median,"medianMs":median,"delay":median,"p95Ms":samples.last(),"samples":target_samples,
+            "results":[],"error":errors.first(),"errors":errors,"checkedAt":now(),"schemaVersion":1,
+            "providerRevision":self.node["providerRevision"],"testedAt":now()}),
+        )
+    }
+}
+
+pub struct BackgroundSample {
+    io: ControllerIo,
+    token: DiagnosticToken,
+    health: bool,
+    recovery_id: Option<u64>,
+    retry_socket: Option<String>,
+    isolated: bool,
+    tun: bool,
+    selected: String,
+    probe: u16,
+    jobs: Arc<Jobs>,
+    wechat: bool,
+}
+pub struct SampleResult {
+    proxies: Result<Value>,
+    connections: Result<Value>,
+    controller: Option<bool>,
+    path: crate::path_health::PathOutcome,
+    retry_outcome: Option<&'static str>,
+}
+impl BackgroundSample {
+    pub fn run(&self) -> SampleResult {
+        use crate::path_health::PathOutcome;
+        let current = || {
+            !self.jobs.shutdown.load(Ordering::SeqCst)
+                && self.jobs.intent_epoch.load(Ordering::SeqCst) == self.token.epoch
+        };
+        let retry_outcome = self.retry_socket.as_ref().filter(|_| current()).map(|id| {
+            if self
+                .io
+                .authorized("DELETE", &format!("/connections/{}", encode(id)), None)
+                .is_ok_and(|r| r.status().is_success() || r.status() == 404)
+            {
+                "socket-closed-awaiting-app-retry"
+            } else {
+                "close-failed"
+            }
+        });
+        let proxies = self.io.api("GET", "/proxies", None);
+        let connections = if current() {
+            self.io.api("GET", "/connections", None)
+        } else {
+            Err(anyhow::anyhow!("采样已取消。"))
+        };
+        let mut result = SampleResult {
+            proxies,
+            connections,
+            controller: None,
+            path: PathOutcome::Skipped,
+            retry_outcome,
+        };
+        if !self.health || !current() {
+            return result;
+        }
+        let binding = (|| -> Result<()> {
+            let config = self.io.api("GET", "/configs", None)?;
+            if !self.isolated {
+                let context = platform::context()?;
+                ensure!(
+                    config["interface-name"] == context["interfaceName"],
+                    "网卡绑定尚未就绪。"
+                );
+                ensure!(config["tun"]["enable"] == self.tun, "TUN 配置尚未就绪。");
+                ensure!(
+                    !self.tun
+                        || platform::tun_device_ready(
+                            config["tun"]["device"].as_str().unwrap_or("")
+                        ),
+                    "TUN 尚未就绪。"
+                );
+            }
+            Ok(())
+        })();
+        result.controller = Some(binding.is_ok());
+        if binding.is_err() || !current() || self.selected == "DIRECT" || self.isolated {
+            return result;
+        }
+        // A lease prevents risk/UDP checks changing the probe selector midway.
+        let Ok(_lease) = self.jobs.probe_gate.try_lock() else {
+            return result;
+        };
+        if self.probe == 0 {
+            return result;
+        }
+        if self
+            .io
+            .api(
+                "PUT",
+                "/proxies/PROBE",
+                Some(&json!({"name":self.selected})),
+            )
+            .is_err()
+        {
+            return result;
+        }
+        let client = Client::builder()
+            .no_proxy()
+            .pool_max_idle_per_host(0)
+            .timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .proxy(
+                match reqwest::Proxy::all(format!("http://127.0.0.1:{}", self.probe)) {
+                    Ok(proxy) => proxy,
+                    Err(_) => return result,
+                },
+            )
+            .build();
+        let Ok(client) = client else {
+            return result;
+        };
+        let mut healthy = false;
+        for (url, expected) in [
+            ("https://www.gstatic.com/generate_204", 204),
+            ("https://www.apple.com/library/test/success.html", 200),
+        ] {
+            if !current() {
+                return result;
+            }
+            if client.get(url).send().is_ok_and(|r| {
+                r.status().as_u16() == expected
+                    && (expected == 204 || r.text().is_ok_and(|body| body.contains("Success")))
+            }) {
+                healthy = true;
+                break;
+            }
+        }
+        if !current() {
+            return result;
+        }
+        // DNS evidence is gathered separately from the explicit VPN outlet.
+        let dns = network::automatic_dns_health();
+        result.path = if !dns {
+            PathOutcome::DnsFailure
+        } else if healthy {
+            PathOutcome::Healthy
+        } else {
+            PathOutcome::EgressFailure
+        };
+        result
+    }
+}
+
+pub struct DiagnosticRequest {
+    kind: CheckKind,
+    id: u64,
+    check: NetworkCheck,
+    token: DiagnosticToken,
+    jobs: Arc<Jobs>,
+}
+impl DiagnosticRequest {
+    pub fn run(self, core: &Mutex<Core>) -> Result<Value> {
+        let current = || {
+            !self.jobs.shutdown.load(Ordering::SeqCst)
+                && !self.jobs.stop_requested.load(Ordering::SeqCst)
+                && self.jobs.intent_epoch.load(Ordering::SeqCst) == self.token.epoch
+        };
+        let result = match self.kind {
+            CheckKind::Connectivity => self.check.connectivity_with(current),
+            CheckKind::Websites => self.check.websites_with(current),
+        };
+        core.lock()
+            .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?
+            .complete_diagnostic(&self, result)
+    }
+}
 pub enum NetworkRequest {
     Subscription(ManualUpdate),
-    Connectivity(NetworkCheck),
-    Websites(NetworkCheck),
+    Diagnostic(Box<DiagnosticRequest>),
+    Node(Box<NodeDiagnostic>),
 }
 impl NetworkRequest {
     pub fn run(self, core: &Mutex<Core>) -> Result<Value> {
         match self {
             Self::Subscription(plan) => {
                 let downloaded = plan.download();
-                core.lock()
-                    .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?
-                    .finish_manual_update(plan, downloaded)
+                let mut c = core
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+                let result = c.finish_manual_update(plan, downloaded);
+                c.publish_read_views();
+                result
             }
-            Self::Connectivity(check) => check.connectivity(),
-            Self::Websites(check) => check.websites(),
+            Self::Diagnostic(plan) => plan.run(core),
+            Self::Node(plan) => {
+                let result = plan.measure()?;
+                let mut c = core
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+                let result = c.finish_node_diagnostic(&plan, result);
+                c.publish_read_views();
+                result
+            }
         }
     }
 }
@@ -3496,12 +4222,50 @@ pub fn prepare_network_request(
         "subscription:update" => lock()
             .and_then(|mut c| c.begin_manual_update(payload))
             .map(NetworkRequest::Subscription),
-        "connectivity:check" => lock()
-            .and_then(|mut c| c.network_check())
-            .map(NetworkRequest::Connectivity),
-        "connectivity:test-website-speeds" => lock()
-            .and_then(|mut c| c.network_check())
-            .map(NetworkRequest::Websites),
+        "connectivity:check" | "connectivity:test-website-speeds" => lock()
+            .and_then(|mut c| {
+                c.begin_diagnostic(
+                    if channel == "connectivity:check" {
+                        CheckKind::Connectivity
+                    } else {
+                        CheckKind::Websites
+                    },
+                    true,
+                )
+            })
+            .map(|plan| NetworkRequest::Diagnostic(Box::new(plan))),
+        "nodes:test"
+        | "nodes:test-recommended"
+        | "nodes:check-risk"
+        | "nodes:check-current-risk"
+        | "nodes:test-udp" => lock()
+            .and_then(|c| {
+                let name = if channel == "nodes:test-recommended" {
+                    c.node_identity(string(payload, "identityKey")?)?["name"]
+                        .as_str()
+                        .context("节点不存在。")?
+                        .to_owned()
+                } else if channel == "nodes:check-current-risk" {
+                    c.engine.store.settings()?["selectedProxy"]
+                        .as_str()
+                        .context("当前节点不存在。")?
+                        .to_owned()
+                } else {
+                    string(payload, "nodeName")?.to_owned()
+                };
+                c.prepare_node_diagnostic(
+                    &name,
+                    if channel.contains("risk") {
+                        "risk"
+                    } else if channel.ends_with("udp") {
+                        "udp"
+                    } else {
+                        "speed"
+                    },
+                    channel == "nodes:test-recommended",
+                )
+            })
+            .map(|plan| NetworkRequest::Node(Box::new(plan))),
         _ => return None,
     })
 }
@@ -3704,15 +4468,20 @@ pub fn start_batch(core: Arc<Mutex<Core>>, kind: String, payload: Value) -> Resu
             if jobs.cancelled(&kind) {
                 break;
             }
-            let result = if let Ok(mut c) = core.lock() {
-                match kind.as_str() {
-                    "risk" => c.risk(&name),
-                    "udp" => c.udp(&name),
-                    _ => c.speed(&name, false),
-                }
-            } else {
-                Err(anyhow::anyhow!("后台状态不可用。"))
-            };
+            events(
+                &format!("nodes:{kind}-progress"),
+                json!({"id":id,"checked":checked,"total":total,"nodeName":name,"phase":"testing","finished":false,"cancelled":false}),
+            );
+            let plan = core
+                .lock()
+                .map_err(|_| anyhow::anyhow!("后台状态不可用。"))
+                .and_then(|c| c.prepare_node_diagnostic(&name, &kind, false));
+            let result = plan.and_then(|plan| {
+                let result = plan.measure()?;
+                core.lock()
+                    .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?
+                    .finish_node_diagnostic(&plan, result)
+            });
             checked += 1;
             // `error` belongs to this node; `last_error` summarises the batch.
             let (result, error) = match result {

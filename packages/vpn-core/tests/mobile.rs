@@ -570,6 +570,52 @@ fn mihomo_config_runs_behind_tun2socks() {
 }
 
 #[test]
+fn android_virtual_dns_precedes_direct_rules_without_changing_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    subscribe(
+        &dir,
+        "proxies:\n  - {name: __QZ_ANDROID_DNS__, type: http, server: example.test, port: 8080}\n  - {name: __QZ_ANDROID_DNS__1, type: http, server: example.test, port: 8081}\n",
+    );
+    call(
+        &dir,
+        "settings:patch",
+        json!({"selectedProxy":"__QZ_ANDROID_DNS__","lanDirect":true,"directDomainRules":["IP-CIDR,172.19.0.0/16"]}),
+    );
+    // Simulate a preference written by a newer shell. Generating DNS must not
+    // rewrite or discard fields this version does not own.
+    let settings_path = dir.path().join("settings.json");
+    let mut settings: Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
+    settings["futureShellPreference"] = json!({"enabled":true,"value":"preserve"});
+    std::fs::write(&settings_path, serde_json::to_vec(&settings).unwrap()).unwrap();
+    let before = call(&dir, "settings:get", json!({}));
+    for selected in ["__QZ_ANDROID_DNS__", "DIRECT", "AUTO"] {
+        call(&dir, "settings:patch", json!({"selectedProxy":selected}));
+        let saved = call(&dir, "settings:get", json!({}));
+        let generated = call(&dir, "mihomo:generate", json!({}));
+        let c: Value = serde_yaml_ng::from_str(
+            &std::fs::read_to_string(generated["config"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(c["proxies"][0]["name"], "__QZ_ANDROID_DNS__2");
+        assert_eq!(c["proxies"][0]["type"], "dns");
+        assert_eq!(
+            c["rules"][0],
+            "AND,((IP-CIDR,172.19.0.2/32,no-resolve),(DST-PORT,53)),__QZ_ANDROID_DNS__2"
+        );
+        assert!(c["dns"].get("listen").is_none());
+        assert_eq!(c["dns"]["enable"], true);
+        assert_eq!(c["dns"]["enhanced-mode"], "fake-ip");
+        assert_eq!(generated["selectedProxy"], selected);
+        assert_eq!(call(&dir, "settings:get", json!({})), saved);
+    }
+    assert_eq!(
+        call(&dir, "settings:get", json!({}))["directDomainRules"],
+        before["directDomainRules"]
+    );
+}
+
+#[test]
 fn mobile_download_result_cannot_follow_an_edited_url() {
     let dir = tempfile::tempdir().unwrap();
     let id = subscribe(&dir, PROVIDER);

@@ -2,6 +2,35 @@ import XCTest
 @testable import SplitVPNNative
 
 final class MenuBarStateTests: XCTestCase {
+    @MainActor func testStopDuringPreflightCannotBeFollowedByLateStart() async throws {
+        let f = try MenuBarFixture(); defer { f.close() }
+        await f.store.refresh()
+        var pending: CheckedContinuation<Void, Never>?
+        f.coreModel.intercept = { channel, _ in
+            if channel == "native:bootstrap" { await withCheckedContinuation { pending = $0 } }
+            return nil
+        }
+        let connecting = Task { try await f.store.toggleConnection() }
+        await menuWait { pending != nil }
+        try await f.store.disconnectNow()
+        pending?.resume()
+        try await connecting.value
+        XCTAssertFalse(f.coreModel.channels.contains("vpn:start"))
+        XCTAssertEqual(f.store.menuState, .disconnected)
+    }
+    @MainActor func testDegradedExitIsDistinctFromRunningEngineAndKeepsStopAvailable() async throws {
+        let f = try MenuBarFixture(); defer { f.close() }
+        f.coreModel.running = true; f.coreModel.healthState = "degraded"
+        await f.store.refresh()
+        XCTAssertTrue(f.store.running)
+        XCTAssertEqual(f.store.menuTitle, "VPN 出口不稳定")
+        XCTAssertEqual(f.store.menuState, .error)
+        XCTAssertTrue(f.store.canDisconnect)
+        XCTAssertFalse(StatusBarIconState(store: f.store, company: f.company).personalConnected)
+        f.coreModel.healthState = nil
+        await f.store.refresh()
+        XCTAssertEqual(f.store.menuState, .connected)
+    }
     @MainActor func testLoadingOffOnTunOffAndRuntimeErrorHaveDistinctStates() async throws {
         let f = try MenuBarFixture(); defer { f.close() }
         XCTAssertEqual(f.store.menuState, .loading)
@@ -107,8 +136,7 @@ final class MenuBarStateTests: XCTestCase {
         await menuWait { pending != nil }
         XCTAssertEqual(f.store.menuState, .connecting)
         XCTAssertFalse(StatusBarIconState(store: f.store, company: f.company).personalConnected)
-        XCTAssertFalse(f.store.canToggleFromMenu)
-        f.runtime.togglePersonal()
+        XCTAssertTrue(f.store.canToggleFromMenu)
         pending?.resume()
         await menuWait { !f.runtime.togglingPersonal }
         XCTAssertEqual(f.coreModel.channels.filter { $0 == "vpn:start" }.count, 1)
@@ -120,6 +148,52 @@ final class MenuBarStateTests: XCTestCase {
         XCTAssertEqual(f.store.menuState, .disconnected)
         XCTAssertFalse(StatusBarIconState(store: f.store, company: f.company).personalConnected)
         XCTAssertEqual(f.coreModel.channels.filter { $0 == "vpn:stop" }.count, 1)
+    }
+    @MainActor func testStopRemainsAvailableWhileWebsiteCheckIsStalled() async throws {
+        let f = try MenuBarFixture(); defer { f.close() }
+        f.coreModel.running = true
+        await f.store.refresh()
+        var pending: CheckedContinuation<Void, Never>?
+        f.coreModel.intercept = { channel, _ in
+            if channel == "connectivity:test-website-speeds" {
+                await withCheckedContinuation { pending = $0 }
+                throw CoreService.CoreError.message("obsolete diagnostic failure")
+            }
+            return nil
+        }
+        f.store.testWebsites()
+        await menuWait { pending != nil }
+        XCTAssertTrue(f.store.canDisconnect)
+        XCTAssertTrue(f.store.canToggleFromMenu)
+        try await f.store.toggleConnection()
+        XCTAssertFalse(f.store.running)
+        XCTAssertEqual(f.coreModel.channels.filter { $0 == "vpn:stop" }.count, 1)
+        pending?.resume()
+        await menuWait { f.core.pendingRequestCount == 0 }
+        XCTAssertNil(f.store.error)
+        XCTAssertNil(f.store.websites)
+        XCTAssertNil(f.store.busy)
+    }
+    @MainActor func testStopCancelsInFlightConnectWithoutAcceptingItsLateResult() async throws {
+        let f = try MenuBarFixture(); defer { f.close() }
+        await f.store.refresh()
+        var pending: CheckedContinuation<Void, Never>?
+        f.coreModel.intercept = { channel, _ in
+            if channel == "vpn:start" {
+                await withCheckedContinuation { pending = $0 }
+                throw CoreService.CoreError.message("connect cancelled")
+            }
+            return nil
+        }
+        let connecting = Task { try await f.store.toggleConnection() }
+        await menuWait { pending != nil }
+        XCTAssertTrue(f.store.canDisconnect)
+        try await f.store.toggleConnection()
+        XCTAssertEqual(f.store.menuState, .disconnected)
+        pending?.resume()
+        try await connecting.value
+        XCTAssertEqual(f.store.menuState, .disconnected)
+        XCTAssertNil(f.store.error)
     }
     @MainActor func testMissingNodeOpensNodePageAndNeverStartsEngine() async throws {
         let f = try MenuBarFixture(); defer { f.close() }

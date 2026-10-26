@@ -47,7 +47,7 @@ struct ChallengeSheet: View {
                 }
             } else if challenge.kind == "click" || challenge.kind == "text" {
                 Text("验证码图片无法显示，请取消后重试。")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(VPNTheme.warning)
             }
             if challenge.kind == "external" {
                 if let raw = challenge.url, let url = URL(string: raw), ["https", "http"].contains(url.scheme ?? "") {

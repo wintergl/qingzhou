@@ -77,19 +77,28 @@ fn run() -> Result<()> {
         events,
         jobs.clone(),
     )?));
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Value>(64);
+    core.lock().unwrap().publish_read_views();
+    let queue = Arc::new(splitvpn_core::dispatch::Dispatch::default());
+    let worker_queue = queue.clone();
     let worker_core = core.clone();
     let worker_out = out.clone();
     let worker_jobs = jobs.clone();
     let worker = std::thread::spawn(move || {
         let mut network_tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
-        for request in rx {
+        while let Some(request) = worker_queue.pop() {
             let id = request["id"].clone();
             let channel = request["channel"].as_str().unwrap();
             let payload = request.get("payload").cloned().unwrap_or_else(|| json!({}));
             if matches!(
                 channel,
-                "subscription:update" | "connectivity:check" | "connectivity:test-website-speeds"
+                "subscription:update"
+                    | "connectivity:check"
+                    | "connectivity:test-website-speeds"
+                    | "nodes:test"
+                    | "nodes:test-recommended"
+                    | "nodes:check-risk"
+                    | "nodes:check-current-risk"
+                    | "nodes:test-udp"
             ) {
                 network_tasks.retain(|t| !t.is_finished());
                 if network_tasks.len() >= 8 {
@@ -120,7 +129,14 @@ fn run() -> Result<()> {
                 start_batch(worker_core.clone(), kind.into(), payload)
             } else {
                 match worker_core.lock() {
-                    Ok(mut c) => c.handle(channel, &payload),
+                    Ok(mut c) => {
+                        let result = c.handle(channel, &payload);
+                        if channel == "vpn:stop" {
+                            worker_jobs.stop_requested.store(false, Ordering::SeqCst);
+                        }
+                        c.publish_read_views();
+                        result
+                    }
                     Err(_) => Err(anyhow::anyhow!("后台状态不可用。")),
                 }
             };
@@ -150,7 +166,8 @@ fn run() -> Result<()> {
     let background = std::thread::spawn(move || {
         let mut delay = Duration::from_secs(1);
         let mut update: Option<std::thread::JoinHandle<()>> = None;
-        let mut recovery_check: Option<std::thread::JoinHandle<()>> = None;
+        let mut sample_task: Option<std::thread::JoinHandle<()>> = None;
+        let mut diagnostic_task: Option<std::thread::JoinHandle<()>> = None;
         while !tick_jobs.shutdown.load(Ordering::SeqCst) {
             tick_jobs.wait_background(delay);
             if tick_jobs.shutdown.load(Ordering::SeqCst) {
@@ -159,18 +176,23 @@ fn run() -> Result<()> {
             if update.as_ref().is_some_and(|task| task.is_finished()) {
                 let _ = update.take().unwrap().join();
             }
-            if recovery_check
-                .as_ref()
-                .is_some_and(|task| task.is_finished())
-            {
-                let _ = recovery_check.take().unwrap().join();
+            if sample_task.as_ref().is_some_and(|t| t.is_finished()) {
+                let _ = sample_task.take().unwrap().join();
             }
-            let mut check = None;
+            if diagnostic_task.as_ref().is_some_and(|t| t.is_finished()) {
+                let _ = diagnostic_task.take().unwrap().join();
+            }
+            let mut diagnostic = None;
+            let mut sample = None;
             let due = match tick_core.try_lock() {
                 Ok(mut c) => {
                     c.tick();
-                    if recovery_check.is_none() {
-                        check = c.take_recovery_check();
+                    c.publish_read_views();
+                    if diagnostic_task.is_none() {
+                        diagnostic = c.take_due_diagnostic();
+                    }
+                    if sample_task.is_none() {
+                        sample = c.take_background_sample();
                     }
                     delay = c.background_interval();
                     if update.is_none() {
@@ -184,12 +206,18 @@ fn run() -> Result<()> {
                     None
                 }
             };
-            if let Some((id, pid, check)) = check {
-                let check_core = tick_core.clone();
-                recovery_check = Some(std::thread::spawn(move || {
-                    let ok = check.recovery_connectivity();
-                    if let Ok(mut c) = check_core.lock() {
-                        c.complete_recovery_check(id, pid, ok);
+            if let Some(plan) = diagnostic {
+                let diagnostic_core = tick_core.clone();
+                diagnostic_task = Some(std::thread::spawn(move || {
+                    let _ = plan.run(&diagnostic_core);
+                }));
+            }
+            if let Some(sample) = sample {
+                let sample_core = tick_core.clone();
+                sample_task = Some(std::thread::spawn(move || {
+                    let result = sample.run();
+                    if let Ok(mut c) = sample_core.lock() {
+                        c.complete_background_sample(&sample, result);
                     }
                 }));
             }
@@ -252,6 +280,29 @@ fn run() -> Result<()> {
             );
             continue;
         };
+        if let Some(value) = jobs
+            .read_views
+            .lock()
+            .ok()
+            .and_then(|cache| cache.get(channel).cloned())
+        {
+            reply(&out, request["id"].clone(), Ok(value));
+            continue;
+        }
+        if channel == "vpn:stop" {
+            jobs.stop_requested.store(true, Ordering::SeqCst);
+            jobs.invalidate_diagnostics();
+        } else if matches!(
+            channel,
+            "vpn:start"
+                | "vpn:restart"
+                | "nodes:select"
+                | "nodes:select-v2"
+                | "native:network-changed"
+                | "network:repair"
+        ) {
+            jobs.invalidate_diagnostics();
+        }
         if let Some(kind) = channel
             .strip_prefix("nodes:cancel-")
             .and_then(|s| s.strip_suffix("-batch"))
@@ -272,11 +323,24 @@ fn run() -> Result<()> {
         ) {
             jobs.cancel_all();
         }
-        if tx.send(request).is_err() {
-            break;
+        match queue.push(request) {
+            Ok(cancelled) => {
+                for request in cancelled {
+                    reply(
+                        &out,
+                        request["id"].clone(),
+                        Err(anyhow::anyhow!("操作已被断开请求取消。")),
+                    );
+                }
+            }
+            Err(request) => reply(
+                &out,
+                request["id"].clone(),
+                Err(anyhow::anyhow!("后台任务较多，请稍后重试。")),
+            ),
         }
     }
-    drop(tx);
+    queue.close();
     let _ = worker.join();
     jobs.shutdown.store(true, Ordering::SeqCst);
     jobs.wake_background();

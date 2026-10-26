@@ -9,42 +9,11 @@ struct DiagnosticsView: View {
     @State private var savingRiskKey = false
     init(store: VPNStore, section: String = "网络检测") { self.store = store; _section = State(initialValue: section) }
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             PageHeader(title: "诊断与风险", subtitle: "连通性、站点表现和风险各自保留真实检测结果")
             Picker("检测项目", selection: $section) { Text("网络检测").tag("网络检测"); Text("节点风险").tag("节点风险"); Text("订阅探测").tag("订阅探测") }.labelsHidden().pickerStyle(.segmented).frame(maxWidth: 440, alignment: .leading)
             if section == "网络检测" {
-                NetworkRecoveryHistoryView(records: store.status?.mihomo.networkRecovery?.history ?? [])
-                HStack {
-                    Button("检测国内与国外连通性") { store.checkConnectivity() }
-                    Button("当前出口站点测速") { store.testWebsites() }
-                }.disabled(!store.canMutate)
-                if let check = store.connectivity {
-                    VStack(alignment: .leading, spacing: 14) {
-                        StatusLabel(title: "国内网络\(check.connectivity.domesticOk ? "正常" : "未连通")", passed: check.connectivity.domesticOk)
-                        StatusLabel(title: "代理出口\((check.connectivity.proxyOk ?? check.connectivity.foreignOk) ? "正常" : "未连通")", passed: check.connectivity.proxyOk ?? check.connectivity.foreignOk)
-                        if let dns = check.connectivity.systemDns {
-                            StatusLabel(title: dns.ok ? "系统 DNS 正常" : "系统 DNS 异常", passed: dns.ok)
-                        }
-                        if let chatgpt = check.connectivity.chatgpt {
-                            StatusLabel(title: chatgpt.ok ? "ChatGPT 网络响应正常" : "ChatGPT 网络响应异常", passed: chatgpt.ok)
-                        }
-                        LabeledContent("出口 IP", value: check.connectivity.externalIp ?? "未取得")
-                        if let error = check.connectivity.error { Text(error).foregroundStyle(.orange) }
-                        if let error = check.nodeRiskError { Text(error).font(.caption).foregroundStyle(.secondary) }
-                    }.detailCard()
-                } else { Text("点击检测后显示本次结果；内核在运行并不代表这些业务一定可访问。").foregroundStyle(.secondary) }
-                if let tests = store.websites {
-                    Text("测试出口：\(tests.proxyName)").font(.headline)
-                    Table(tests.results) {
-                        TableColumn("站点", value: \.label)
-                        TableColumn("结果") { item in Text(item.ok ? "连通" : "失败") }
-                        TableColumn("延迟") { item in Text(item.delay.map { "\(Int($0)) ms" } ?? "—") }
-                        TableColumn("说明") { item in Text(item.error ?? "已返回响应").foregroundStyle(.secondary) }
-                    }.frame(minHeight: 160)
-                }
-                Spacer()
-                Button("修复当前网络") { store.action("网络修复", channel: "network:repair") }.disabled(!store.canMutate || store.connectionProtected)
-                Text(store.connectionProtected ? "原版当前维护连接，网络修复请在原版执行。" : "修复会停止当前内核并恢复应用设置的 DNS，请在连接异常时使用。").font(.caption).foregroundStyle(.secondary)
+                DiagnosticsNetworkPanel(store: store)
             } else if section == "节点风险" {
                 HStack {
                     TextField("搜索节点或出口 IP", text: $riskSearch).textFieldStyle(.roundedBorder).frame(maxWidth: 210)
@@ -58,7 +27,7 @@ struct DiagnosticsView: View {
                         ProgressView(value: Double(progress.checked), total: Double(max(1, progress.total)))
                         Text("\(progress.checked) / \(progress.total) · \(progress.finished ? progress.error != nil ? "未完成" : progress.cancelled ? "已取消" : "已完成" : progress.nodeName ?? "准备检测")")
                             .font(.caption).foregroundStyle(.secondary)
-                        if let reason = progress.stoppedReason { Text(reason).font(.caption).foregroundStyle(.orange) }
+                        if let reason = progress.stoppedReason { Text(reason).font(.caption).foregroundStyle(VPNTheme.warning) }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Table(store.risks.filter { riskSearch.isEmpty || "\($0.nodeName) \($0.ip ?? "")".localizedCaseInsensitiveContains(riskSearch) }) {
@@ -75,7 +44,7 @@ struct DiagnosticsView: View {
                     Text(store.riskKeyConfigured ? "原生版密钥已保存在钥匙串" : "旧版加密密钥无法读取时，可在此重新填写，原版数据保留。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                if let note = store.riskBatchNote { Text(note).font(.caption).foregroundStyle(.orange) }
+                if let note = store.riskBatchNote { Text(note).font(.caption).foregroundStyle(VPNTheme.warning) }
             } else {
                 Text(store.connectionProtected ? "原版正在维护 VPN 连接，先在原版结束连接，再进入订阅探测。" : "订阅探测会临时切换到直连模式，原有分流会暂停。").foregroundStyle(.secondary)
                 HStack {

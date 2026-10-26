@@ -30,10 +30,10 @@ struct StatusBarView: View {
                     Text(store.displaySelectedProxy).lineLimit(2).multilineTextAlignment(.trailing).help(store.displaySelectedProxy)
                 }.font(.system(size: 12))
                 Button(action: runtime.togglePersonal) {
-                    Text(store.connectionOperation != nil || runtime.togglingPersonal ? "正在处理…" : store.running ? "断开个人 VPN" : "连接个人 VPN")
+                    Text(store.canDisconnect ? "断开个人 VPN" : store.connectionOperation != nil || runtime.togglingPersonal ? "正在处理…" : "连接个人 VPN")
                         .frame(maxWidth: .infinity)
                 }.buttonStyle(VPNButtonStyle(prominent: true))
-                    .disabled(!store.canToggleFromMenu || runtime.togglingPersonal || runtime.terminating)
+                    .disabled(!store.canToggleFromMenu || (runtime.togglingPersonal && !store.canDisconnect) || runtime.terminating)
                 if let reason = store.menuRestriction { Text(reason).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
                 if store.connectionServiceUpdateRequired {
                     Button("更新连接服务", action: store.updateConnectionService).disabled(!store.canMutate)
@@ -86,13 +86,13 @@ struct StatusBarView: View {
         switch state {
         case .connected: return VPNTheme.green
         case .connecting, .disconnecting: return VPNTheme.accent
-        case .error: return .orange
+        case .error: return VPNTheme.warning
         default: return .secondary
         }
     }
     private func errorRow(_ reason: String, detail: @escaping () -> Void) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Text(reason).font(.system(size: 11)).foregroundStyle(.orange).lineLimit(2).help(reason)
+            Text(reason).font(.system(size: 11)).foregroundStyle(VPNTheme.warning).lineLimit(2).help(reason)
             Spacer(minLength: 0)
             Button("详情", action: detail).buttonStyle(.plain).font(.system(size: 11)).foregroundStyle(VPNTheme.accent)
         }

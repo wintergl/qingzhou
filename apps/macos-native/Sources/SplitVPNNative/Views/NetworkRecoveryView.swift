@@ -30,7 +30,7 @@ struct NetworkRecoveryView: View {
                     Spacer(minLength: 4)
                     if recovery.state == "failed" {
                         Button("重试") { store.action("重试网络恢复", channel: "vpn:retry-recovery") }
-                            .disabled(!store.canMutate).foregroundStyle(.orange)
+                            .disabled(!store.canMutate).foregroundStyle(VPNTheme.warning)
                     }
                     Button { store.page = .diagnostics } label: {
                         HStack(spacing: 3) { Text("详情"); Image(systemName: "chevron.right").font(.system(size: 9, weight: .semibold)) }
@@ -53,7 +53,7 @@ struct NetworkRecoveryView: View {
         }
     }
     private func tone(_ recovery: NetworkRecoveryStatus) -> Color {
-        if recovery.state == "failed" || recovery.state == "helper-update-required" { return .orange }
+        if recovery.state == "failed" || recovery.state == "helper-update-required" { return VPNTheme.warning }
         if recovery.active { return VPNTheme.accent }
         return recovery.latest?.outcome == "verified" ? VPNTheme.green : VPNTheme.secondary
     }
@@ -94,13 +94,13 @@ struct NetworkRecoveryHistoryView: View {
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(record.title)
                                 Text("\(record.timeText) · \(record.reasonTitle) · 耗时 \(record.durationText)").foregroundStyle(.secondary)
-                                if let error = record.error { Text(error).foregroundStyle(.orange).textSelection(.enabled) }
+                                if let error = record.error { Text(error).foregroundStyle(VPNTheme.warning).textSelection(.enabled) }
                             }
                             Divider()
                         }
                     }
                 }.frame(maxHeight: 180)
             }
-        }.font(.system(size: 12)).detailCard()
+        }.font(.system(size: 12)).frame(maxWidth: .infinity, alignment: .leading).detailCard()
     }
 }

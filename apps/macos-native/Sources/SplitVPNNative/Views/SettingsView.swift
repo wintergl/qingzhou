@@ -10,7 +10,7 @@ struct SettingsView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
-            PageHeader(title: "设置", subtitle: "沿用现有配置，网络调整经校验后在线应用")
+            PageHeader(title: "设置", subtitle: "按你的使用习惯，调整外观与连接方式")
             Form {
                 Section("界面外观") {
                     Picker("显示模式", selection: $appearance) {
@@ -39,10 +39,12 @@ struct SettingsView: View {
                     Text("继续使用已有的订阅、节点、组、规则与缓存。").foregroundStyle(VPNTheme.secondary)
                     Button("重新读取当前配置") { Task { await store.refresh() } }
                 }
-            }.formStyle(.grouped)
-            Text("原版应用保持运行；当前由原版维护的连接不会被新版强制停止。").foregroundStyle(VPNTheme.secondary).font(.system(size: 13))
-        }.padding(28).frame(width: 640, height: 680)
-            .font(.system(size: 15)).controlSize(.large).tint(VPNTheme.accent).buttonStyle(VPNButtonStyle())
+            }.formStyle(.grouped).scrollContentBackground(.hidden)
+            if store.legacyOwnerRunning {
+                Text("当前连接由原版应用维护。").foregroundStyle(VPNTheme.secondary).font(.system(size: 11))
+            }
+        }.padding(28).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .font(.system(size: 13)).controlSize(.regular).tint(VPNTheme.accent).buttonStyle(VPNButtonStyle())
             .background(VPNTheme.background)
             .preferredColorScheme(appearance == "system" ? nil : appearance == "dark" ? .dark : .light)
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in store.refreshLoginItem() }

@@ -130,7 +130,7 @@ final class StatusBarController: NSObject, NSPopoverDelegate {
         menu.addItem(.separator())
         _ = action("打开主窗口", .main)
         _ = action(store.running ? "断开个人 VPN" : "连接个人 VPN", .personal,
-                   enabled: store.canToggleFromMenu && !runtime.togglingPersonal && !runtime.terminating)
+                   enabled: store.canToggleFromMenu && (!runtime.togglingPersonal || store.canDisconnect) && !runtime.terminating)
         if let reason = store.menuRestriction { info(reason) }
         _ = action(company.connectionEnabled ? "断开私有网络" : "连接私有网络", .company,
                    enabled: company.canToggleFromMenu && !runtime.terminating)

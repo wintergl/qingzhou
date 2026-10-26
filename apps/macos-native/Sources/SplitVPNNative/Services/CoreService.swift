@@ -23,6 +23,14 @@ final class CoreService: ObservableObject {
     /// engine start. A core that never answers then fails the request.
     nonisolated static let requestTimeout: Duration = .seconds(300)
 
+    nonisolated static func timeout(for channel: String) -> Duration {
+        switch channel {
+        case "diagnostics:get-state", "native:bootstrap", "vpn:get-status", "traffic:get-monitor", "traffic:get-snapshot", "nodes:list", "node-groups:list": return .seconds(8)
+        case "vpn:stop": return .seconds(45)
+        case "nodes:test", "nodes:test-recommended", "connectivity:check", "connectivity:test-website-speeds": return .seconds(40)
+        default: return requestTimeout
+        }
+    }
     func start() throws {
         guard process == nil else { return }
         availability = .starting
@@ -71,12 +79,12 @@ final class CoreService: ObservableObject {
     }
 
     func request<T: Decodable>(_ channel: String, payload: [String: Any] = [:], as: T.Type = T.self,
-                               timeout: Duration = CoreService.requestTimeout) async throws -> T {
+                               timeout: Duration? = nil) async throws -> T {
         let value = try await requestValue(channel, payload: payload, timeout: timeout)
         return try JSONDecoder().decode(T.self, from: value.encoded)
     }
     func requestValue(_ channel: String, payload: [String: Any] = [:],
-                      timeout: Duration = CoreService.requestTimeout) async throws -> JSONValue {
+                      timeout: Duration? = nil) async throws -> JSONValue {
         guard availability != .closed else { throw CoreError.transport("VPN 服务已关闭。") }
         pendingRequestCount += 1
         defer { pendingRequestCount -= 1 }
@@ -91,6 +99,7 @@ final class CoreService: ObservableObject {
             }
         }
         try start()
+        let timeout = timeout ?? Self.timeout(for: channel)
         return try await withCheckedThrowingContinuation { continuation in
             let id = UUID().uuidString
             callbacks[id] = continuation
@@ -99,8 +108,11 @@ final class CoreService: ObservableObject {
                 guard let self, let callback = self.callbacks.removeValue(forKey: id) else { return }
                 self.timeouts.removeValue(forKey: id)
                 let message = "VPN 服务响应超时，操作可能仍在进行，请稍后刷新状态。"
-                self.availability = .unavailable(message)
-                callback.resume(throwing: CoreError.transport(message))
+                let snapshot = ["diagnostics:get-state", "native:bootstrap", "vpn:get-status", "traffic:get-monitor", "traffic:get-snapshot", "nodes:list", "node-groups:list"].contains(channel)
+                if snapshot {
+                    self.availability = .unavailable(message)
+                    callback.resume(throwing: CoreError.transport(message))
+                } else { callback.resume(throwing: CoreError.message(message)) }
             }
             do {
                 var data = try JSONSerialization.data(withJSONObject: ["id": id, "channel": channel, "payload": payload])

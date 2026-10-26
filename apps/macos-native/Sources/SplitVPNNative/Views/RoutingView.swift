@@ -29,7 +29,7 @@ struct RoutingView: View {
                     Picker("出口", selection: $outletFilter) {
                         Text("全部出口").tag("all"); Text("走 VPN").tag("vpn"); Text("直连").tag("direct")
                     }.labelsHidden().frame(width: 110)
-                    Button { editor = RoutingRuleDraft() } label: { Label("添加规则", systemImage: "plus") }.disabled(!store.canMutate)
+                    Button { editor = RoutingRuleDraft() } label: { Label("添加规则", systemImage: "plus") }.buttonStyle(VPNButtonStyle(prominent: true)).disabled(!store.canMutate)
                     Spacer()
                 }
                 HStack {

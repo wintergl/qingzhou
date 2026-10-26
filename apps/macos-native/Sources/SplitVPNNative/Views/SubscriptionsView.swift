@@ -8,10 +8,10 @@ struct SubscriptionsView: View {
     var entries: [Subscription] { store.status?.subscription.entries ?? [] }
     var selected: Subscription? { entries.first { $0.id == selection } }
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            PageHeader(title: "订阅", subtitle: "沿用已保存的订阅与节点，更新失败时保留上次可用内容")
+        VStack(alignment: .leading, spacing: 20) {
+            PageHeader(title: "订阅", subtitle: "管理你的节点来源，自动更新时保留上次可用内容")
             HStack {
-                Button { editor = SubscriptionDraft() } label: { Label("添加订阅", systemImage: "plus") }
+                Button { editor = SubscriptionDraft() } label: { Label("添加订阅", systemImage: "plus") }.buttonStyle(VPNButtonStyle(prominent: true))
                 Button("更新全部启用订阅") { store.action("更新订阅", channel: "subscription:update") }
                 Spacer()
                 Text("\(entries.count) 条订阅 · \(store.status?.subscription.nodeCount ?? 0) 个节点").foregroundStyle(.secondary)
@@ -21,13 +21,15 @@ struct SubscriptionsView: View {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(entry.name).fontWeight(.medium)
                         Text(entry.displayHost).font(.caption).foregroundStyle(.secondary)
-                    }.padding(.vertical, 12)
+                    }.padding(.vertical, 8)
                 }.width(min: 180, ideal: 250)
-                TableColumn("状态") { entry in Text(entry.enabled ? (entry.status == "ready" ? "可用" : "待更新") : "已停用") }.width(85)
-                TableColumn("节点") { entry in Text("\(entry.nodeCount)") }.width(60)
+                TableColumn("状态") { entry in StatusPill(title: entry.enabled ? (entry.status == "ready" ? "可用" : "待更新") : "已停用", passed: entry.enabled && entry.status == "ready") }.width(85)
+                TableColumn("节点") { entry in Text("\(entry.nodeCount)").monospacedDigit() }.width(60)
                 TableColumn("最近更新") { entry in Text(dateText(entry.updatedAt)).foregroundStyle(.secondary) }.width(min: 135, ideal: 160)
                 TableColumn("更新方式") { entry in Text(entry.updateIntervalMinutes.map { "每 \($0) 分钟" } ?? "手动 / 默认设置") }.width(min: 110, ideal: 130)
             }.tableCard()
+                .overlay { if entries.isEmpty { ContentUnavailableView("添加第一条订阅", systemImage: "tray", description: Text("保存订阅链接后，节点会显示在这里。")) } }
+            Group {
             if let entry = selected {
                 HStack {
                     Button("编辑") { editor = SubscriptionDraft(entry) }
@@ -42,10 +44,11 @@ struct SubscriptionsView: View {
                     Spacer()
                     Button("删除", role: .destructive) { deleting = entry }
                 }.disabled(!store.canMutate)
-                if let error = entry.lastError { Text(error).foregroundStyle(.orange).textSelection(.enabled) }
+                if let error = entry.lastError { Text(error).foregroundStyle(VPNTheme.warning).textSelection(.enabled) }
             } else { Text("选择一条订阅进行管理").foregroundStyle(.secondary) }
+            }.frame(minHeight: 36)
             Text("用量和到期日仅在订阅服务提供这些信息时显示。").font(.caption).foregroundStyle(.secondary)
-        }.padding(32)
+        }.padding(28)
         .sheet(item: $editor) { draft in SubscriptionEditor(draft: draft) { name, url, id in
             store.action("保存订阅", channel: "native:save-subscription", payload: ["name": name, "url": url, "id": id ?? ""])
             editor = nil
@@ -74,7 +77,7 @@ struct SubscriptionEditor: View {
     @State private var name = ""
     @State private var url = ""
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
+        VStack(alignment: .leading, spacing: 20) {
             Text(draft.entryID == nil ? "添加订阅" : "编辑订阅").font(.title2.weight(.semibold))
             Form { TextField("名称", text: $name); TextField("订阅 URL", text: $url) }.textFieldStyle(.roundedBorder)
             Text("订阅链接只保存在本机，更新时交给现有 VPN 核心读取。").foregroundStyle(.secondary)

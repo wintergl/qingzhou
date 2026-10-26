@@ -113,7 +113,7 @@ public sealed class CoreClient : ICoreClient
             return Task.FromException<JsonNode?>(e as CoreException ?? new CoreException(ExitReason()));
         }
         // A core that never answers must not leave the page waiting forever.
-        var timer = new CancellationTokenSource(RequestTimeout);
+        var timer = new CancellationTokenSource(TimeoutFor(channel));
         timer.Token.Register(() =>
         {
             if (pending.TryRemove(id, out var stale))
@@ -124,7 +124,13 @@ public sealed class CoreClient : ICoreClient
     }
 
     /// Longest wait for one reply, covering engine start and slow downloads.
-    static readonly TimeSpan RequestTimeout = TimeSpan.FromMinutes(5);
+    static TimeSpan TimeoutFor(string channel) => channel switch
+    {
+        "diagnostics:get-state" or "native:bootstrap" or "vpn:get-status" or "traffic:get-monitor" or "traffic:get-snapshot" or "nodes:list" or "node-groups:list" => TimeSpan.FromSeconds(8),
+        "vpn:stop" => TimeSpan.FromSeconds(45),
+        "nodes:test" or "nodes:test-recommended" or "connectivity:check" or "connectivity:test-website-speeds" => TimeSpan.FromSeconds(40),
+        _ => TimeSpan.FromMinutes(5),
+    };
 
     /// Closing stdin is the core's shutdown signal: it stops its mihomo child.
     public void Shutdown()

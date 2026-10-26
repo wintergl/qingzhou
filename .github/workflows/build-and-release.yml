@@ -490,6 +490,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Check out release notes
+        uses: actions/checkout@v6
+
       - name: Download all platform artifacts
         uses: actions/download-artifact@v8
         with:
@@ -523,13 +526,21 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
+          notes="docs/RELEASE_${TAG#v}.md"
+          notes_args=(--generate-notes)
+          if [[ -f "${notes}" ]]; then
+            notes_args=(--notes-file "${notes}")
+          fi
           if gh release view "${TAG}" >/dev/null 2>&1; then
             test "$(gh release view "${TAG}" --json isPrerelease --jq .isPrerelease)" = "true" || {
               echo "Refusing to replace an existing non-prerelease: ${TAG}" >&2
               exit 1
             }
             gh release edit "${TAG}" --prerelease --title "轻舟 ${TAG}"
+            if [[ -f "${notes}" ]]; then
+              gh release edit "${TAG}" --notes-file "${notes}"
+            fi
           else
-            gh release create "${TAG}" --verify-tag --prerelease --generate-notes --title "轻舟 ${TAG}"
+            gh release create "${TAG}" --verify-tag --prerelease "${notes_args[@]}" --title "轻舟 ${TAG}"
           fi
           gh release upload "${TAG}" release/assets/* --clobber

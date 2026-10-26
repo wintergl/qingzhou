@@ -34,7 +34,7 @@ struct StatusBarIconState: Equatable {
 extension StatusBarIconState {
     @MainActor init(store: VPNStore, company: CompanyStore) {
         personal = store.menuState
-        personalConnected = store.statusKnown && store.running && (store.status?.mihomo.networkRecovery?.ready ?? true)
+        personalConnected = store.statusKnown && store.running && store.status?.mihomo.connectionHealth?.degraded != true && (store.status?.mihomo.networkRecovery?.ready ?? true)
         // A helper tunnel can remain connected during resource checks. Only
         // confirmed state may colour the hull after core communication is lost.
         companyConnected = (!company.takeoverEnabled || company.routingKnown)
@@ -60,6 +60,7 @@ extension VPNStore {
         case "failed", "helper-update-required": return .error
         default: break
         }
+        if running, status?.mihomo.connectionHealth?.degraded == true { return .error }
         return running ? .connected : .disconnected
     }
     var menuTitle: String {
@@ -72,6 +73,9 @@ extension VPNStore {
             default: break
             }
         }
+        if running, status?.mihomo.connectionHealth?.degraded == true {
+            return status?.mihomo.connectionHealth?.failureKind == "dns" ? "DNS 暂不可用" : "VPN 出口不稳定"
+        }
         if menuState == .connected, status?.mihomo.mode == "subscription-probe" { return "订阅检测中" }
         if menuState == .connected, status?.settings.tun == false { return "代理服务已开启" }
         return menuState.title
@@ -83,7 +87,7 @@ extension VPNStore {
         return "\(routing) · \(status.settings.tun ? "TUN 系统分流" : "TUN 已关闭")"
     }
     var canToggleFromMenu: Bool {
-        canMutate && !connectionProtected && status?.mihomo.mode != "subscription-probe"
+        canControlConnection && !connectionProtected && status?.mihomo.mode != "subscription-probe"
     }
     var connectionServiceUpdateRequired: Bool {
         statusKnown && status?.mihomo.networkRecovery?.helperUpdateRequired == true && !connectionProtected

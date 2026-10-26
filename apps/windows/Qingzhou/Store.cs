@@ -26,7 +26,7 @@ public sealed class Store
     bool? pendingAvailability;
     DesktopActivity? pendingEnvironment;
     Task environmentPump = Task.CompletedTask;
-    long networkGeneration, statusGeneration;
+    long networkGeneration, statusGeneration, operationGeneration;
 
     public Store(ICoreClient? core = null) => Core = core ?? new CoreClient();
     public DesktopActivity Activity { get; private set; } = new();
@@ -38,6 +38,9 @@ public sealed class Store
     public JsonNode? Traffic { get; private set; }
     public JsonNode? Connectivity { get; private set; }
     public JsonNode? Websites { get; private set; }
+    public JsonNode? Diagnostics { get; private set; }
+    public bool SpeedBatchRunning { get; private set; }
+    public string? SpeedTestingNode { get; private set; }
     public JsonNode? RiskProgress { get; private set; }
     public string DataDir { get; private set; } = "";
     public bool PreviewOnly { get; private set; } = true;
@@ -62,10 +65,11 @@ public sealed class Store
     public bool Running => Status.At("mihomo").At("state").Str() == "running";
     public string RecoveryState => Status.At("mihomo").At("networkRecovery").At("state").Str() ?? "idle";
     public bool Recovering => RecoveryState is "waiting-network" or "recovering" or "failed" or "helper-update-required";
-    public bool Connected => Running && !Recovering && StatusKnown;
-    public bool PersonalTrayConnected => StatusKnown && Running && (RecoveryState is "idle" or "ready");
+    public bool PathDegraded => Status.At("mihomo").At("connectionHealth").At("state").Str() == "degraded";
+    public bool Connected => Running && !Recovering && !PathDegraded && StatusKnown;
+    public bool PersonalTrayConnected => StatusKnown && Running && !PathDegraded && (RecoveryState is "idle" or "ready");
     public VPNTrayState TrayState => !StatusKnown ? (transportClosed || statusReadFailed ? VPNTrayState.Unknown : VPNTrayState.Loading)
-        : connectionState ?? (Status.At("mihomo").At("state").Str() == "error" ? VPNTrayState.Error : RecoveryState switch
+        : connectionState ?? (PathDegraded ? VPNTrayState.Error : Status.At("mihomo").At("state").Str() == "error" ? VPNTrayState.Error : RecoveryState switch
         {
             "waiting-network" or "recovering" => VPNTrayState.Connecting,
             "failed" or "helper-update-required" => VPNTrayState.Error,
@@ -81,6 +85,7 @@ public sealed class Store
         VPNTrayState.Disconnecting => "正在断开…",
         VPNTrayState.Error when RecoveryState == "failed" => "网络恢复失败",
         VPNTrayState.Error when RecoveryState == "helper-update-required" => "连接服务待更新",
+        VPNTrayState.Error when PathDegraded => "VPN 出口不稳定",
         VPNTrayState.Error => "连接异常",
         VPNTrayState.Connected when Status.At("mihomo").At("mode").Str() == "subscription-probe" => "订阅检测中",
         VPNTrayState.Connected when Settings.At("tun").Bool() == false => "代理服务已开启",
@@ -94,7 +99,7 @@ public sealed class Store
         "recovering" => "恢复连接中",
         "failed" => "恢复失败",
         "helper-update-required" => "连接服务需更新",
-        _ => Running ? "已连接" : "未连接",
+        _ => PathDegraded && Running ? "出口不稳定" : Running ? "已连接" : "未连接",
     };
     public string RecoveryMessage => RecoveryState switch
     {
@@ -131,7 +136,10 @@ public sealed class Store
     public HashSet<string> Favorites => Settings.At("favoriteNodeNames").Strings().ToHashSet();
     public IEnumerable<JsonNode> ProviderNodes => Nodes.Where(n => n.At("identityKey").Str() is not null);
     public JsonNode? CurrentRisk => Risks.FirstOrDefault(r => r.At("nodeName").Str() == SelectedProxy);
-    public bool CanMutate => !stopped && StatusKnown && !PreviewOnly && Busy is null;
+    public bool CanMutate => !stopped && StatusKnown && !PreviewOnly && Busy is null && connectionState != VPNTrayState.Disconnecting;
+    public bool CanDisconnect => !stopped && StatusKnown && !PreviewOnly && !ConnectionProtected
+        && (ConnectionRequested || connectionState == VPNTrayState.Connecting) && connectionState != VPNTrayState.Disconnecting;
+    public bool CanControlConnection => CanDisconnect || CanMutate;
     public bool ConnectionProtected => LegacyOwner && Running && !OwnsRuntime;
 
     public void Notify(bool trafficOnly = false)
@@ -239,7 +247,7 @@ public sealed class Store
                 await Core.Request("native:runtime-environment", new JsonObject
                 {
                     ["sleeping"] = next.Sleeping, ["lowPower"] = next.LowPower,
-                    ["networkEvents"] = monitor?.NetworkEventsAvailable == true,
+                    ["networkEvents"] = monitor?.NetworkEventsAvailable == true, ["visible"] = next.CanRefresh,
                 });
             }
             catch { /* Core's conservative watchdog remains active if a notification fails. */ }
@@ -290,8 +298,61 @@ public sealed class Store
         }
     }
 
+    void ApplyDiagnostics(JsonNode? state)
+    {
+        if (state is null) return;
+        Diagnostics = state;
+        Connectivity = state.At("connectivity").At("result");
+        Websites = state.At("websites").At("result");
+    }
+    public string DiagnosticTiming(string kind)
+    {
+        var record = Diagnostics.At(kind);
+        static string Clock(string? stamp) => DateTimeOffset.TryParse(stamp, out var value) ? value.ToLocalTime().ToString("HH:mm:ss") : "尚未检测";
+        var source = record.At("source").Str() == "automatic" ? "自动检测" : "手动检测";
+        var first = record.At("state").Str() == "running" ? $"{source}中…" : record.At("checkedAt").Str() is { } at ? $"{source} · {Clock(at)}" : "等待首次检测";
+        if (record.At("state").Str() == "stale") first += " · 已过期";
+        var next = Diagnostics.At("pausedReason").Str() switch {
+            "sleeping" => "休眠期间暂停", "recovering" => "连接恢复后继续检测", "disconnected" => "连接后自动检测", "node-test" => "节点检测结束后继续自动检查",
+            _ => record.At("nextCheckAt").Str() is { } stamp ? $"下次 {Clock(stamp)} · 每 {(record.At("intervalSeconds").Num() ?? 300)/60:0} 分钟" : "连接检测每 5 分钟 · 站点测速每 15 分钟",
+        };
+        return $"{first}\n{next}";
+    }
+    public async void StartNodeSpeed(IEnumerable<JsonNode> nodes)
+    {
+        if (!CanMutate || !Running || SpeedBatchRunning) return;
+        var names = nodes.Where(n => n.At("identityKey").Str() is not null && n.At("identityAmbiguous").Bool() != true).Select(n => n.At("name").Str() ?? "").ToList();
+        if (names.Count == 0) return;
+        SpeedBatchRunning = true; SpeedTestingNode = null; Notify();
+        try { await Core.Request("nodes:start-speed-batch", new JsonObject { ["nodeNames"] = J.Array(names) }); }
+        catch (Exception e) { SpeedBatchRunning = false; Fail(e.Message); Notify(); }
+    }
+    public async void CancelNodeSpeed()
+    {
+        try { await Core.Request("nodes:cancel-speed-batch"); } catch (Exception e) { Fail(e.Message); }
+    }
     void OnEvent(string name, JsonNode? data)
     {
+        if (name == "diagnostics:updated") { ApplyDiagnostics(data); Notify(); return; }
+        if (name == "nodes:speed-progress")
+        {
+            var finished = data.At("finished").Bool() == true;
+            SpeedBatchRunning = !finished;
+            SpeedTestingNode = data.At("phase").Str() == "testing" ? data.At("nodeName").Str() : null;
+            var done = data.At("checked").Num() ?? 0; var total = data.At("total").Num() ?? 0;
+            BatchMessage = finished ? (data.At("cancelled").Bool() == true ? $"已取消 · 完成 {done:0}/{total:0}" : $"本次测速完成 · {done:0} 个节点") : $"正在测速 · {done:0}/{total:0}";
+            if (data.At("result") is { } result && result.At("nodeName").Str() is { } nodeName && Nodes.FirstOrDefault(n => n.At("name").Str() == nodeName) is JsonObject node)
+            {
+                node["delay"] = result.At("medianDelayMs")?.DeepClone();
+                node["available"] = result.At("status").Str() is "available" or "unstable";
+                node["latencyStatus"] = result.At("status")?.DeepClone();
+                node["latencyCheckedAt"] = result.At("testedAt")?.DeepClone();
+                node["latencySource"] = "manual";
+            }
+            Notify();
+            if (finished) _ = Refresh();
+            return;
+        }
         if (name == "core:disconnected")
         {
             transportClosed = true;
@@ -349,17 +410,20 @@ public sealed class Store
     {
         if (stopped || refreshing || transportClosed) return;
         refreshing = true;
+        var operation = operationGeneration;
+        var confirmation = statusGeneration;
         ConfigurePolling();
         try
         {
             var data = await Core.Request("native:bootstrap");
-            if (stopped) return;
+            if (stopped || operation != operationGeneration || confirmation != statusGeneration) return;
             Status = data.At("status");
             statusReadFailed = Status is null;
             statusGeneration++;
             Nodes = data.At("nodes").Items().ToList();
             Risks = data.At("risks").Items().ToList();
             Traffic = data.At("traffic");
+            ApplyDiagnostics(data.At("diagnostics"));
             PreviewOnly = data.At("previewOnly").Bool() ?? true;
             LegacyOwner = data.At("legacyOwnerRunning").Bool() == true;
             OwnsRuntime = data.At("ownsRuntime").Bool() == true;
@@ -369,6 +433,7 @@ public sealed class Store
         }
         catch (Exception e)
         {
+            if (operation != operationGeneration || confirmation != statusGeneration) return;
             statusReadFailed = true;
             statusGeneration++;
             OnCompanyRouting?.Invoke(null);
@@ -443,30 +508,34 @@ public sealed class Store
     {
         if (startupRequested || !CanMutate) return;
         startupRequested = true;
+        var generation = operationGeneration;
         Busy = Running ? "读取连接状态" : "自动连接 VPN";
         connectionState = Running ? null : VPNTrayState.Connecting;
         Notify();
         try
         {
             var result = await Core.Request("native:startup-connect");
+            if (generation != operationGeneration) return;
             if (Status is JsonObject status && result.At("mihomo") is { } mihomo) status["mihomo"] = mihomo.DeepClone();
             await Refresh();
+            if (generation != operationGeneration) return;
             var outcome = result.At("startupOutcome").Str();
             if (outcome == "connected") Message = "已自动连接 VPN。";
             else if (outcome == "waiting-network") Message = "网络尚未就绪，就绪后将自动连接 VPN。";
         }
-        catch (Exception e) { Fail($"自动连接未完成：{e.Message}"); }
+        catch (Exception e) { if (generation == operationGeneration) Fail($"自动连接未完成：{e.Message}"); }
         finally
         {
-            connectionState = null;
-            Busy = null;
+            if (generation == operationGeneration) { connectionState = null; Busy = null; }
             Notify();
         }
     }
 
     public async void Act(string title, string channel, JsonObject? payload = null)
     {
-        if (!CanMutate) { Fail("服务尚未就绪或已有操作正在进行，请稍后重试。"); return; }
+        if (!(channel == "vpn:stop" ? CanDisconnect : CanMutate)) { Fail("服务尚未就绪或已有操作正在进行，请稍后重试。"); return; }
+        var generation = ++operationGeneration;
+        if (channel == "vpn:stop") { networkGeneration++; Connectivity = null; Websites = null; }
         Busy = title;
         connectionState = channel switch { "vpn:start" => VPNTrayState.Connecting, "vpn:stop" => VPNTrayState.Disconnecting, _ => null };
         Message = null;
@@ -474,16 +543,17 @@ public sealed class Store
         try
         {
             var result = await Core.Request(channel, payload);
+            if (generation != operationGeneration) return;
             if (result.At("controllerOk").Bool() == false)
                 throw new CoreException(result.At("controllerError").Str() ?? "内核连接验证失败。");
             await Refresh();
+            if (generation != operationGeneration) return;
             Message = $"{title}完成";
         }
-        catch (Exception e) { Fail(e.Message); }
+        catch (Exception e) { if (generation == operationGeneration) Fail(e.Message); }
         finally
         {
-            connectionState = null;
-            Busy = null;
+            if (generation == operationGeneration) { connectionState = null; Busy = null; }
             Notify();
         }
     }
@@ -505,6 +575,7 @@ public sealed class Store
 
     public void ConnectOrDisconnect()
     {
+        if (CanDisconnect) { Act("断开 VPN", "vpn:stop"); return; }
         if (!CanMutate) return;
         if (!ConnectionRequested && SelectedProxy != "DIRECT" &&
             !ProviderNodes.Any(n => n.At("name").Str() == SelectedProxy && n.At("identityAmbiguous").Bool() != true))
@@ -565,9 +636,11 @@ public sealed class Store
 
     public async void CheckConnectivity()
     {
+        if (Diagnostics.At("connectivity").At("state").Str() == "running") return;
         if (!CanMutate) return;
         Busy = "检测连通性";
         var generation = networkGeneration;
+        var operation = operationGeneration;
         Notify();
         try
         {
@@ -575,23 +648,25 @@ public sealed class Store
             if (!stopped && generation == networkGeneration) Connectivity = result;
             await Refresh();
         }
-        catch (Exception e) { Fail(e.Message); }
-        finally { Busy = null; Notify(); }
+        catch (Exception e) { if (operation == operationGeneration) Fail(e.Message); }
+        finally { if (operation == operationGeneration) Busy = null; Notify(); }
     }
 
     public async void TestWebsites()
     {
+        if (Diagnostics.At("websites").At("state").Str() == "running") return;
         if (!CanMutate) return;
         Busy = "检测站点";
         var generation = networkGeneration;
+        var operation = operationGeneration;
         Notify();
         try
         {
             var result = await Core.Request("connectivity:test-website-speeds");
             if (!stopped && generation == networkGeneration) Websites = result;
         }
-        catch (Exception e) { Fail(e.Message); }
-        finally { Busy = null; Notify(); }
+        catch (Exception e) { if (operation == operationGeneration) Fail(e.Message); }
+        finally { if (operation == operationGeneration) Busy = null; Notify(); }
     }
 
     public async void SetLaunchAtLogin(bool enabled)

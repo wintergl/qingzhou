@@ -62,7 +62,7 @@ final class NativeCommands: NSObject, NSMenuItemValidation, NSMenuDelegate {
     }
     func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
         if menuItem.action == #selector(personal) {
-            return runtime.store.canToggleFromMenu && !runtime.togglingPersonal && !runtime.terminating
+            return runtime.store.canToggleFromMenu && (!runtime.togglingPersonal || runtime.store.canDisconnect) && !runtime.terminating
         }
         if menuItem.action == #selector(refresh) { return !runtime.terminating && !runtime.store.refreshing }
         if menuItem.action == #selector(quit) { return !runtime.terminating }

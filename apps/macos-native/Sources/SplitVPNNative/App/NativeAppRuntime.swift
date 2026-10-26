@@ -52,7 +52,7 @@ final class NativeAppRuntime: ObservableObject {
         openMain(page: .company)
     }
     func togglePersonal() {
-        guard !terminating, !togglingPersonal, store.canToggleFromMenu else { return }
+        guard !terminating, (!togglingPersonal || store.canDisconnect), store.canToggleFromMenu else { return }
         togglingPersonal = true
         personalOperation = Task {
             defer { togglingPersonal = false }

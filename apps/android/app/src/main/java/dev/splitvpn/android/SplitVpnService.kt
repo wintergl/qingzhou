@@ -66,6 +66,7 @@ class SplitVpnService : VpnService() {
     @Volatile private var managedAlwaysOn = false
     private var sessionGeneration = 0L
     private val healthProbePolicy = HealthProbePolicy()
+    private var verifiedHealthGeneration: Long? = null
     private val runtime by lazy { RuntimeStatusRepository(this) }
     private val mainHandler = Handler(Looper.getMainLooper())
     private val commandLock = Any()
@@ -353,6 +354,9 @@ class SplitVpnService : VpnService() {
         try {
             checkStarting()
             if (prepare(this) != null) throw PermanentVpnFailure("Android VPN 权限需要重新授权，请点连接后确认。")
+            paths.ensure()
+            // Routing and DNS policies must see bundled geodata on the first start too.
+            prepareBundledGeodata(paths)
             val config = MihomoConfigGenerator(CoreClient(paths), settingsRepository).generate()
             if (!config.selectionValid) throw PermanentVpnFailure(config.selectionError)
             if (mihomoProcess?.isAlive == true && tun2socksPid > 0) {
@@ -368,7 +372,6 @@ class SplitVpnService : VpnService() {
             val tun2socksBinary = File(applicationInfo.nativeLibraryDir, "libtun2socks.so")
             if (!mihomoBinary.exists() || !tun2socksBinary.exists())
                 throw PermanentVpnFailure("安装包缺少 Android 内核，请重新安装完整 APK。")
-            prepareBundledGeodata(paths)
             checkStarting()
             val process = ProcessBuilder(
                 mihomoBinary.absolutePath,
@@ -540,8 +543,12 @@ class SplitVpnService : VpnService() {
                         ProbeOutcome.SKIPPED
                     } else {
                         try {
-                            MihomoControllerClient.requireVpnHttpsEgress()
+                            // This UID bypasses the VPN. Probe the app-facing DNS
+                            // destination and resolved-IP SOCKS/TLS route explicitly.
+                            dev.splitvpn.android.core.VpnDnsClient().requireHealthy()
                             ProbeOutcome.HEALTHY
+                        } catch (_: dev.splitvpn.android.core.VpnDnsFailure) {
+                            ProbeOutcome.DNS_FAILURE
                         } catch (_: Exception) {
                             ProbeOutcome.EGRESS_FAILURE
                         }
@@ -575,6 +582,10 @@ class SplitVpnService : VpnService() {
             }
             return
         }
+        if (outcome == ProbeOutcome.HEALTHY && verifiedHealthGeneration != sessionGeneration) {
+            verifiedHealthGeneration = sessionGeneration
+            appendLog("VPN DNS 与 HTTPS 路径检查通过")
+        }
         applyHealthDecision(healthProbePolicy.record(outcome, power))
     }
 
@@ -582,14 +593,20 @@ class SplitVpnService : VpnService() {
         when (decision) {
             HealthDecision.None -> scheduleHealthCheck()
             is HealthDecision.RetryAfter -> {
-                appendLog("VPN 健康检查暂未通过，将再次确认")
+                val component = when {
+                    healthProbePolicy.dnsFailures > 0 -> "DNS 入口"
+                    healthProbePolicy.egressFailures > 0 -> "DNS 解析后的 HTTPS 路径"
+                    else -> "本地控制通道"
+                }
+                appendLog("VPN $component 健康检查暂未通过，将再次确认")
                 scheduleHealthCheck(decision.delayMs)
             }
             is HealthDecision.Rebuild -> {
                 operationRevision = gate.revision
                 val message = when (decision.failure) {
                     ProbeFailureKind.CONTROLLER -> "VPN 本地控制通道连续无响应，正在恢复"
-                    ProbeFailureKind.EGRESS -> "VPN HTTPS 出口连续不可用，正在恢复"
+                    ProbeFailureKind.DNS -> "VPN DNS 入口连续不可用，正在恢复"
+                    ProbeFailureKind.EGRESS -> "VPN DNS 解析后的 HTTPS 路径连续不可用，正在恢复"
                 }
                 failDataPlane(message)
             }
@@ -621,8 +638,8 @@ class SplitVpnService : VpnService() {
             .setMtu(VPN_MTU)
             .addAddress("172.19.0.1", 30)
             .addRoute("0.0.0.0", 0)
-            .addDnsServer("223.5.5.5")
-            .addDnsServer("119.29.29.29")
+            // The core routes this virtual endpoint to Mihomo's internal DNS outbound.
+            .addDnsServer("172.19.0.2")
 
         try {
             builder.addDisallowedApplication(packageName)

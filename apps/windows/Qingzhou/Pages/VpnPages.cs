@@ -13,6 +13,7 @@ public sealed class OverviewPage : PageBase
     readonly TextBlock modeValue, modeNote, proxyValue, loginValue;
     readonly TextBlock domestic = Ui.Text(), foreign = Ui.Text(), ip = Ui.Text(), risk = Ui.Text(), connNote = Ui.Note();
     readonly StackPanel sites = new();
+    readonly TextBlock connTiming = Ui.Note(), siteTiming = Ui.Note();
     readonly TextBlock counts = Ui.Text("", 12, secondary: true);
     readonly Button connect, check, websites, update, retry;
     readonly TextBlock recoveryNote = Ui.Warning();
@@ -46,12 +47,12 @@ public sealed class OverviewPage : PageBase
         var connectivity = Ui.Card(Ui.Stack(12,
             Ui.Bar(check, Ui.Text("连接检测", 16, bold: true)),
             Line("国内网络", domestic), Line("国外网络", foreign), Line("出口 IP", ip), Line("出口风险", risk),
-            connNote), 18);
+            connNote, connTiming), 18);
         websites = Ui.Button("检测", S.TestWebsites);
         var siteCard = Ui.Card(Ui.Stack(12,
             Ui.Bar(websites, Ui.Text("站点测速", 16, bold: true)),
             sites,
-            Link("查看完整诊断", () => S.Go("诊断与风险"))), 18);
+            siteTiming), 18);
         var pair = new Grid();
         pair.ColumnDefinitions.Add(new ColumnDefinition());
         pair.ColumnDefinitions.Add(new ColumnDefinition());
@@ -97,8 +98,9 @@ public sealed class OverviewPage : PageBase
         subtitle.Text = S.Recovering ? S.RecoveryMessage : S.Connected ? $"内核已运行 · {Uptime(S.Status.At("mihomo").At("startedAt").Str())}" : "选择节点后连接 VPN";
         pill.Text = $"{(S.Connected ? "●" : "○")} {S.ConnectionLabel}";
         Ui.Tone(pill, S.Connected ? "good" : "muted");
-        connect.Content = S.ConnectionProtected ? "验证连接" : S.ConnectionRequested ? "断开 VPN" : "连接 VPN";
-        foreach (var button in new[] { connect, check, websites, update }) button.IsEnabled = S.CanMutate;
+        connect.Content = S.ConnectionProtected ? "验证连接" : (S.CanDisconnect || S.ConnectionRequested) ? "断开 VPN" : "连接 VPN";
+        foreach (var button in new[] { check, websites, update }) button.IsEnabled = S.CanMutate;
+        connect.IsEnabled = S.CanControlConnection;
         recovery.Visibility = S.Recovering || S.LatestRecovery is not null ? Visibility.Visible : Visibility.Collapsed;
         recoveryNote.Text = string.Join("\n", new[] { S.RecoveryMessage, S.LatestRecoveryMessage }.Where(value => value.Length > 0));
         retry.Visibility = S.RecoveryState == "failed" ? Visibility.Visible : Visibility.Collapsed;
@@ -118,6 +120,12 @@ public sealed class OverviewPage : PageBase
         connNote.Text = c.At("error").Str()
             ?? (S.CurrentRisk is { } r ? $"风险记录：{Ui.Date(r.At("checkedAt").Str())}" : "检测包含系统 DNS 与 ChatGPT 网络响应。");
 
+        connTiming.Text = S.DiagnosticTiming("connectivity");
+        siteTiming.Text = S.DiagnosticTiming("websites");
+        check.Content = S.Diagnostics.At("connectivity").At("state").Str() == "running" ? "检测中…" : "立即检测";
+        websites.Content = S.Diagnostics.At("websites").At("state").Str() == "running" ? "检测中…" : "立即检测";
+        check.IsEnabled = S.CanMutate && S.Diagnostics.At("connectivity").At("state").Str() != "running";
+        websites.IsEnabled = S.CanMutate && S.Diagnostics.At("websites").At("state").Str() != "running";
         sites.Children.Clear();
         var results = S.Websites.At("results").Items().Take(3).ToList();
         if (results.Count == 0)
@@ -127,7 +135,7 @@ public sealed class OverviewPage : PageBase
         }
         foreach (var item in results)
         {
-            var value = Ui.Text(item.At("ok").Bool() == true ? (item.At("delay").Num() is { } d ? $"{d:0} ms" : "连通") : "失败");
+            var value = Ui.Text(item.At("ok").Bool() == true ? (item.At("delay").Num() is { } d ? $"{d:0} ms" : "连通") : item.At("failureReason").Str() == "restricted" ? $"访问受限 · {item.At("httpStatus").Num():0}" : item.At("failureReason").Str() == "timeout" ? "响应超时" : "未连通");
             Ui.Add(sites, Line(item.At("label").Str() ?? "", value), 10);
         }
 
@@ -270,18 +278,20 @@ public sealed class SubscriptionsPage : PageBase
     }
 }
 
-public sealed record NodeRow(string Id, string Mark, string Name, string Meta, string Country, string City, string Risk, string Latency, string Fav);
+public sealed record NodeRow(string Id, string Mark, string Name, string Meta, string Location, string Risk, string Latency, string LatencyLabel, string CheckedAt, string Source, string Fav);
 
 public sealed class NodesPage : PageBase
 {
     readonly Grid view;
     readonly TextBlock subtitle, count = Ui.Text("", 13, secondary: true), batch = Ui.Text("", 13, secondary: true);
-    readonly TextBox search = Ui.Input(240);
-    readonly ComboBox subscription = new() { Width = 180, MinHeight = 32 };
+    readonly TextBox search = Ui.Input(200);
+    readonly ComboBox subscription = new() { Width = 142, MinHeight = 32 };
+    readonly ComboBox qualityFilter = new() { Width = 110, MinHeight = 30, ItemsSource = new[] { "全部状态", "可用", "异常", "待测" }, SelectedIndex = 0 };
+    readonly ComboBox order = new() { Width = 120, MinHeight = 30, ItemsSource = new[] { "默认排序", "延迟优先", "先看异常" }, SelectedIndex = 0 };
     readonly CheckBox favoritesOnly = new() { Content = "仅收藏", VerticalAlignment = VerticalAlignment.Center };
     readonly ListView table = Ui.Table(SelectionMode.Extended,
-        ("", "Mark", 34), ("节点", "Name", 260), ("类型 · 订阅 · 状态", "Meta", 230), ("国家", "Country", 70),
-        ("地区", "City", 80), ("风险", "Risk", 70), ("延迟", "Latency", 80), ("收藏", "Fav", 50));
+        ("", "Mark", 22), ("节点 / 订阅", "Name", 260), ("连接质量", "Latency", 116), ("最近测速", "CheckedAt", 96),
+        ("位置", "Location", 102), ("IP 风险", "Risk", 74), ("收藏", "Fav", 38));
     readonly Button select, favorite, speedSelected, speedAll, recommended, udp, cancel;
     readonly Dictionary<string, JsonNode> byId = [];
     List<JsonNode> filtered = [];
@@ -290,6 +300,13 @@ public sealed class NodesPage : PageBase
 
     public NodesPage(Store store) : base(store)
     {
+        if (table.View is GridView columns) {
+            columns.Columns[1].DisplayMemberBinding = null; columns.Columns[1].CellTemplate = TwoLine("Name", "Meta");
+            columns.Columns[2].DisplayMemberBinding = null; columns.Columns[2].CellTemplate = TwoLine("Latency", "LatencyLabel");
+            columns.Columns[3].DisplayMemberBinding = null; columns.Columns[3].CellTemplate = TwoLine("CheckedAt", "Source");
+        }
+        qualityFilter.SelectionChanged += (_, _) => Update(false);
+        order.SelectionChanged += (_, _) => Update(false);
         search.TextChanged += (_, _) => Update(false);
         subscription.SelectionChanged += (_, _) => { if (!syncing) Update(false); };
         favoritesOnly.Click += (_, _) => Update(false);
@@ -299,28 +316,50 @@ public sealed class NodesPage : PageBase
             if (e.ChangedButton == MouseButton.Left && SelectedNodes() is [var node] && S.CanMutate) S.Select(node);
         };
         select = Ui.Button("设为当前出口", () => { if (SelectedNodes() is [var node]) S.Select(node); }, accent: true);
-        favorite = Ui.Button("切换收藏", () => { if (SelectedNodes() is [var node]) S.ToggleFavorite(node); });
-        speedSelected = Ui.Button("测速选中节点", () => Speed(SelectedNodes()));
-        speedAll = Ui.Button("测速当前列表", () => Speed(filtered));
-        recommended = Ui.Button("推荐多站点测速", () =>
+        favorite = Ui.Button("收藏", () => { if (SelectedNodes() is [var node]) S.ToggleFavorite(node); });
+        speedSelected = Ui.Button("测速所选", () => Speed(SelectedNodes()));
+        speedAll = Ui.Button("测速列表", () => Speed(filtered));
+        recommended = Ui.Button("多站点复测", () =>
         {
             if (SelectedNodes() is [var node] && node.At("identityKey").Str() is { } key)
                 S.Act("推荐测速", "nodes:test-recommended", new JsonObject { ["identityKey"] = key });
         });
         udp = Ui.Button("UDP 探测", () =>
             S.Act("启动 UDP 探测", "nodes:start-udp-batch", new JsonObject { ["nodeNames"] = Names(SelectedNodes()) }));
-        cancel = Ui.Button("取消测速", () => S.Act("取消测速", "nodes:cancel-speed-batch"));
+        cancel = Ui.Button("取消测速", S.CancelNodeSpeed);
         view = Layout(
             Ui.Header("节点", "", out _, out subtitle),
-            Ui.Bar(count, Ui.Field("搜索", search), subscription, favoritesOnly),
+            Ui.Stack(10, Wrap(Ui.Field("搜索", search), subscription, favoritesOnly), Ui.Bar(count, qualityFilter, order)),
             table,
-            Ui.Bar(batch, select, favorite, speedSelected, speedAll, recommended, udp, cancel),
+            Ui.Bar(batch),
+            Wrap(select, speedSelected, speedAll, favorite, recommended, udp, cancel),
             Ui.Note("按住 Ctrl 或 Shift 多选；双击节点设为当前出口。国家和地区由节点名称识别，风险显示上次实际出口检测结果。"));
     }
 
+    static WrapPanel Wrap(params UIElement[] items) {
+        var panel = new WrapPanel();
+        foreach (var item in items) { if (item is FrameworkElement element) element.Margin = new Thickness(0, 0, 8, 8); panel.Children.Add(item); }
+        return panel;
+    }
+    static DataTemplate TwoLine(string first, string second) {
+        var panel = new FrameworkElementFactory(typeof(StackPanel));
+        panel.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 6, 0, 6));
+        var title = new FrameworkElementFactory(typeof(TextBlock));
+        title.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(first));
+        title.SetValue(TextBlock.TextTrimmingProperty, TextTrimming.CharacterEllipsis);
+        title.SetBinding(FrameworkElement.ToolTipProperty, new System.Windows.Data.Binding(first));
+        if (first is "Latency" or "CheckedAt") title.SetValue(TextBlock.FontFamilyProperty, new System.Windows.Media.FontFamily("Consolas"));
+        title.SetValue(TextBlock.FontSizeProperty, 13.0); title.SetValue(TextBlock.FontWeightProperty, FontWeights.Medium);
+        var detail = new FrameworkElementFactory(typeof(TextBlock));
+        detail.SetBinding(TextBlock.TextProperty, new System.Windows.Data.Binding(second));
+        detail.SetValue(TextBlock.FontSizeProperty, 10.0); detail.SetValue(UIElement.OpacityProperty, 0.7);
+        detail.SetValue(FrameworkElement.MarginProperty, new Thickness(0, 4, 0, 0));
+        panel.AppendChild(title); panel.AppendChild(detail);
+        return new DataTemplate { VisualTree = panel };
+    }
     static string Id(JsonNode node) => node.At("identityKey").Str() ?? node.At("name").Str() ?? "";
     static JsonArray Names(IEnumerable<JsonNode> nodes) => J.Array(nodes.Select(n => n.At("name").Str() ?? ""));
-    void Speed(IEnumerable<JsonNode> nodes) => S.Act("启动节点测速", "nodes:start-speed-batch", new JsonObject { ["nodeNames"] = Names(nodes) });
+    void Speed(IEnumerable<JsonNode> nodes) => S.StartNodeSpeed(nodes);
 
     List<JsonNode> SelectedNodes() =>
         table.SelectedItems.OfType<NodeRow>().Select(r => byId.GetValueOrDefault(r.Id)).Where(n => n is not null).Select(n => n!).ToList();
@@ -339,10 +378,13 @@ public sealed class NodesPage : PageBase
             var location = n.At("location");
             return (n.At("identityKey").Str() is not null || name == "DIRECT")
                 && (subscriptionId == "all" || n.At("subscriptionId").Str() == subscriptionId)
+                && (qualityFilter.SelectedIndex == 0 || (qualityFilter.SelectedIndex == 1 && n.At("available").Bool() == true) || (qualityFilter.SelectedIndex == 2 && n.At("available").Bool() == false) || (qualityFilter.SelectedIndex == 3 && n.At("available").Bool() is null))
                 && (favoritesOnly.IsChecked != true || favorites.Contains(name))
                 && (query.Length == 0 || $"{name} {n.At("subscriptionName").Str()} {location.At("country").Str()} {location.At("city").Str()}"
                     .Contains(query, StringComparison.OrdinalIgnoreCase));
         }).ToList();
+        if (order.SelectedIndex == 1) filtered = filtered.OrderBy(n => n.At("available").Bool() == true && n.At("delay").Num() is { } d && d > 0 ? d : double.MaxValue).ThenBy(n => n.At("name").Str()).ToList();
+        if (order.SelectedIndex == 2) filtered = filtered.OrderBy(n => n.At("available").Bool() == false ? 0 : 1).ThenBy(n => n.At("name").Str()).ToList();
         byId.Clear();
         foreach (var node in filtered) byId[Id(node)] = node;
         var rows = filtered.Select(n =>
@@ -350,18 +392,22 @@ public sealed class NodesPage : PageBase
             var name = n.At("name").Str() ?? "";
             var provider = n.At("identityKey").Str() is not null;
             var ambiguous = n.At("identityAmbiguous").Bool() == true;
-            var availability = ambiguous ? "同名冲突" : n.At("available").Bool() switch { true => "可连接", false => "未连通", null => "未检测" };
+            var status = n.At("latencyStatus").Str();
+            var label = status switch { "timeout" => "连接超时", "failed" or "unreachable" => "暂未连通", "stale" => "结果已过期", "unstable" => "响应波动", "available" => "可用", _ => "尚未测速" };
+            var active = S.SpeedTestingNode == name;
+            var latency = active ? "检测中…" : n.At("delay").Num() is { } delay && delay > 0 ? $"{delay:0} ms" : status == "timeout" ? "超时" : n.At("available").Bool() == false ? "未连通" : "待测速";
+            var stamp = n.At("latencyCheckedAt").Str();
+            var clock = DateTimeOffset.TryParse(stamp, out var tested) ? tested.ToLocalTime().ToString("HH:mm:ss") : "—";
             var risk = ambiguous ? null : S.Risks.FirstOrDefault(r => r.At("nodeName").Str() == name);
             return new NodeRow(Id(n), n.At("selected").Bool() == true ? "✓" : "", name,
-                $"{(n.At("type").Str() ?? "").ToUpperInvariant()} · {n.At("subscriptionName").Str() ?? "内置出口"} · {availability}",
-                n.At("location").At("country").Str() ?? (provider ? "未识别" : "—"),
-                n.At("location").At("city").Str() ?? "—",
-                RiskLabel(risk),
-                n.At("delay").Num() is { } d ? $"{d:0} ms" : "未测速",
+                $"{(n.At("type").Str() ?? "").ToUpperInvariant()} · {n.At("subscriptionName").Str() ?? "内置出口"}",
+                string.Join(" · ", new[] { n.At("location").At("country").Str(), n.At("location").At("city").Str() }.Where(s => !string.IsNullOrEmpty(s))),
+                RiskLabel(risk), latency, active ? "正在等待响应" : ambiguous ? "同名冲突" : label, clock,
+                stamp is null ? "尚无记录" : n.At("latencySource").Str() == "engine" ? "自动探测" : "手动测速",
                 !provider ? "" : favorites.Contains(name) ? "★" : "☆");
         }).ToList();
         Ui.Fill(table, rows, r => r.Id);
-        count.Text = $"{rows.Count} 个节点";
+        count.Text = $"{rows.Count} 项 · {filtered.Count(n => n.At("available").Bool() == true)} 可用 · {filtered.Count(n => n.At("available").Bool() == false)} 异常";
         batch.Text = S.BatchMessage ?? "";
         UpdateButtons();
     }
@@ -385,14 +431,14 @@ public sealed class NodesPage : PageBase
     {
         var selected = SelectedNodes();
         var ready = S.CanMutate;
-        var live = ready && S.Running;
+        var live = ready && S.Running && !S.SpeedBatchRunning;
         select.IsEnabled = ready && selected.Count == 1;
         favorite.IsEnabled = ready && selected is [var one] && one.At("identityKey").Str() is not null;
         speedSelected.IsEnabled = live && selected.Count > 0;
         speedAll.IsEnabled = live && filtered.Count > 0;
         recommended.IsEnabled = live && selected is [var single] && single.At("identityKey").Str() is not null;
         udp.IsEnabled = live && selected.Count > 0;
-        cancel.IsEnabled = live;
+        cancel.IsEnabled = S.SpeedBatchRunning;
     }
 }
 

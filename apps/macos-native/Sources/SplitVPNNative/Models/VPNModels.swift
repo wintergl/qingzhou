@@ -30,6 +30,7 @@ struct Bootstrap: Decodable {
     var ownsRuntime: Bool
     var companyRouting: CompanyRoutingState
     var dataDir: String
+    var diagnostics: DiagnosticSchedule? = nil
 }
 struct VPNStatus: Decodable {
     var appStartedAt: String
@@ -44,6 +45,13 @@ struct CoreStatus: Decodable {
     var startedAt: String?
     var lastError: String?
     var networkRecovery: NetworkRecoveryStatus? = nil
+    var connectionHealth: ConnectionHealthStatus? = nil
+}
+struct ConnectionHealthStatus: Decodable {
+    var state: String
+    var failureKind: String?
+    var consecutiveFailures: Int?
+    var degraded: Bool { state == "degraded" }
 }
 struct NetworkRecoveryStatus: Decodable {
     var state: String
@@ -108,9 +116,37 @@ struct VPNNode: Decodable, Identifiable {
     var subscriptionName: String?
     var identityAmbiguous: Bool?
     var location: NodeLocation?
+    var latencyStatus: String? = nil
+    var latencyCheckedAt: String? = nil
+    var latencySource: String? = nil
+    var latencyFailure: String? = nil
     var id: String { identityKey ?? name }
     var isProvider: Bool { identityKey != nil }
-    var latencyText: String { delay.map { "\(Int($0)) ms" } ?? "未测速" }
+    var latencyText: String {
+        if name == "DIRECT" { return "直连" }
+        if identityAmbiguous == true || latencyStatus == "ambiguous" { return "同名冲突" }
+        if let delay, delay > 0 { return "\(Int(delay)) ms" }
+        switch latencyStatus {
+        case "timeout": return "超时"
+        case "failed", "unreachable": return "未连通"
+        case "ambiguous": return "同名冲突"
+        case "stale": return "已过期"
+        default: return available == false ? "未连通" : "待测速"
+        }
+    }
+    var latencyLabel: String {
+        if name == "DIRECT" { return "本机网络" }
+        if identityAmbiguous == true { return "请检查订阅" }
+        switch latencyStatus {
+        case "stale": return "结果已过期"
+        case "timeout": return "连接超时"
+        case "failed", "unreachable": return "未收到响应"
+        case "unstable": return "响应波动"
+        case "ambiguous": return "请检查订阅"
+        case "available": return "可用"
+        default: return available == false ? "未收到响应" : delay.map { $0 > 0 ? "可用" : "未收到响应" } ?? "尚无结果"
+        }
+    }
     var availabilityText: String { identityAmbiguous == true ? "同名冲突" : available.map { $0 ? "可连接" : "未连通" } ?? "未检测" }
 }
 struct NodeLocation: Decodable {
@@ -233,7 +269,7 @@ struct SystemNetworkProbe: Decodable {
     var elapsedMs: Double?
 }
 struct ConnectivityLatency: Decodable { var domesticMs: Double?; var foreignMs: Double? }
-struct WebsiteTests: Decodable { var proxyName: String; var results: [WebsiteResult] }
+struct WebsiteTests: Decodable { var proxyName: String; var results: [WebsiteResult]; var checkedAt: String? = nil }
 struct WebsiteResult: Decodable, Identifiable {
     var id: String
     var label: String
@@ -241,6 +277,14 @@ struct WebsiteResult: Decodable, Identifiable {
     var delay: Double?
     var ok: Bool
     var error: String?
+    var httpStatus: Int? = nil
+    var failureReason: String? = nil
+    var checkedAt: String? = nil
+    var responseText: String {
+        if ok { return delay.map { "\(Int($0)) ms" } ?? "可访问" }
+        if failureReason == "restricted" { return "访问受限\(httpStatus.map { " · \($0)" } ?? "")" }
+        return failureReason == "timeout" ? "响应超时" : "未连通"
+    }
 }
 
 enum JSONValue: Codable {

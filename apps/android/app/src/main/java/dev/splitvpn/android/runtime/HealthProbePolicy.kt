@@ -4,11 +4,13 @@ enum class ProbeOutcome {
     HEALTHY,
     CONTROLLER_FAILURE,
     EGRESS_FAILURE,
+    DNS_FAILURE,
     SKIPPED
 }
 
 enum class ProbeFailureKind {
     CONTROLLER,
+    DNS,
     EGRESS
 }
 
@@ -18,10 +20,11 @@ sealed interface HealthDecision {
     data class Rebuild(val failure: ProbeFailureKind) : HealthDecision
 }
 
-/** Keeps local-controller failures separate from failures on the selected VPN egress. */
+/** Controller health is independent; DNS and TLS share one application-path failure budget. */
 class HealthProbePolicy(
     private val controllerFailureThreshold: Int = 2,
     private val egressFailureThreshold: Int = 3,
+    private val dnsFailureThreshold: Int = 3,
     private val activeRetryMs: Long = 5_000L,
     private val conserveRetryMs: Long = 15_000L
 ) {
@@ -30,9 +33,15 @@ class HealthProbePolicy(
     var egressFailures: Int = 0
         private set
 
+    private var applicationFailures: Int = 0
+
+    var dnsFailures: Int = 0
+        private set
+
     init {
         require(controllerFailureThreshold > 0)
         require(egressFailureThreshold > 0)
+        require(dnsFailureThreshold > 0)
         require(activeRetryMs > 0)
         require(conserveRetryMs > 0)
     }
@@ -45,6 +54,8 @@ class HealthProbePolicy(
             }
             ProbeOutcome.CONTROLLER_FAILURE -> {
                 egressFailures = 0
+                dnsFailures = 0
+                applicationFailures = 0
                 controllerFailures++
                 if (controllerFailures >= controllerFailureThreshold) {
                     HealthDecision.Rebuild(ProbeFailureKind.CONTROLLER)
@@ -52,10 +63,23 @@ class HealthProbePolicy(
                     HealthDecision.RetryAfter(retryDelay(power))
                 }
             }
+            ProbeOutcome.DNS_FAILURE -> {
+                controllerFailures = 0
+                egressFailures = 0
+                dnsFailures++
+                applicationFailures++
+                if (applicationFailures >= dnsFailureThreshold) {
+                    HealthDecision.Rebuild(ProbeFailureKind.DNS)
+                } else {
+                    HealthDecision.RetryAfter(retryDelay(power))
+                }
+            }
             ProbeOutcome.EGRESS_FAILURE -> {
                 controllerFailures = 0
+                dnsFailures = 0
                 egressFailures++
-                if (egressFailures >= egressFailureThreshold) {
+                applicationFailures++
+                if (applicationFailures >= egressFailureThreshold) {
                     HealthDecision.Rebuild(ProbeFailureKind.EGRESS)
                 } else {
                     HealthDecision.RetryAfter(retryDelay(power))
@@ -67,6 +91,8 @@ class HealthProbePolicy(
     fun reset() {
         controllerFailures = 0
         egressFailures = 0
+        dnsFailures = 0
+        applicationFailures = 0
     }
 
     private fun retryDelay(power: PowerState): Long =

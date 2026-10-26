@@ -2,9 +2,9 @@
 
 让个人 VPN、局域网和私有网络各走其路的原生智能分流客户端。共享 Rust 核心负责订阅、节点与规则，macOS / Windows / iOS / Android 使用各自的原生界面和系统 VPN 接入。
 
-当前源码版本为 **0.6.9**。桌面端提供 aTrust 私有网络接入；地址和账号由用户配置，EasyConnect 尚未接入。各端安装包和真实联网按平台分别验收。
+当前源码版本为 **0.6.10**。桌面端提供 aTrust 私有网络接入；地址和账号由用户配置，EasyConnect 尚未接入。各端安装包和真实联网按平台分别验收。
 
-本轮汇总桌面断开响应、DNS/出口分级恢复、Android DNS 路径与检测界面改进，详见 [0.6.9 更新说明](docs/RELEASE_0.6.9.md)。GitHub 附件继续作为预发布，签名和设备验收限制见说明。
+本轮汇总桌面断开响应、DNS/出口分级恢复、Android DNS 路径与检测界面改进，详见 [0.6.10 更新说明](docs/RELEASE_0.6.10.md)。GitHub 附件继续作为预发布，签名和设备验收限制见说明。
 
 macOS / Windows 已接入网络切换、断网恢复和睡眠唤醒的自动处理，并根据窗口可见性与系统省电状态减少后台工作，详见 [macOS](apps/macos-native/README.md#网络切换与后台省电) / [Windows](apps/windows/README.md#网络切换与后台省电)。Windows 原生通知与实际耗电量仍待实机测试。
 

@@ -15,7 +15,7 @@
 | 许可证范围、原文与对应源码 | [许可证说明](LICENSES.md) |
 | 四端完整构建结果与未验收范围 | [构建验证](BUILD_VERIFICATION.md) |
 | 源码范围与隐私检查 | [源码说明](SOURCE_SNAPSHOT.md) |
-| 近期稳定性修复与发布限制 | [0.6.9 更新说明](RELEASE_0.6.9.md) |
+| 近期稳定性修复与发布限制 | [0.6.10 更新说明](RELEASE_0.6.10.md) |
 | 版本变化 | [macOS CHANGELOG](../apps/macos-native/CHANGELOG.md) |
 
 构建命令集中维护在开发指南。平台 README 保留各端特有的行为，安装包内的 Windows `README.txt` 保留为离线使用说明。源码测试不代表已完成安装或实机联网验收。

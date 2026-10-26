@@ -80,6 +80,9 @@ jobs:
       - name: Run offline release-script tests
         run: python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
+      - name: Check Windows tray assets before dependency builds
+        run: python3 apps/windows/script/check_tray_assets.py
+
   rust:
     name: Rust core checks
     needs: metadata

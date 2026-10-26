@@ -1,6 +1,6 @@
 [package]
 name = "splitvpn-core"
-version = "0.6.9"
+version = "0.6.10"
 edition = "2024"
 rust-version = "1.85"
 

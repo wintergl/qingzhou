@@ -85,7 +85,7 @@ bundle=Path(sys.argv[2])
 (bundle/'Contents/Resources/config.json').write_text('{}')
 info={'CFBundleExecutable':'SplitVPNNative','CFBundleIdentifier':'dev.split-vpn.desktop.swiftui.v032',
  'CFBundleName':'轻舟','CFBundleDisplayName':'轻舟','CFBundlePackageType':'APPL',
- 'CFBundleShortVersionString':'0.6.9','CFBundleVersion':'2026102503','LSMinimumSystemVersion':'14.0',
+ 'CFBundleShortVersionString':'0.6.10','CFBundleVersion':'2026102601','LSMinimumSystemVersion':'14.0',
  'NSPrincipalClass':'NSApplication','NSHighResolutionCapable':True,'CFBundleIconFile':'icon.icns'}
 with (bundle/'Contents/Info.plist').open('wb') as f: plistlib.dump(info,f)
 # Repository-relative paths only: no build-machine user or folder names.

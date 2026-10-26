@@ -12,8 +12,8 @@ android {
         applicationId = "dev.splitvpn.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 16
-        versionName = "0.6.9"
+        versionCode = 17
+        versionName = "0.6.10"
 
         // libmihomo.so, libtun2socks.so and the Rust core ship for arm64 only.
         ndk {

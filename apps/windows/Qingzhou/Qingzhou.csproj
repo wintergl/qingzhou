@@ -19,9 +19,9 @@
     <RootNamespace>Qingzhou</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\qingzhou.ico</ApplicationIcon>
-    <Version>0.6.9</Version>
-    <FileVersion>0.6.9.1025</FileVersion>
-    <InformationalVersion>0.6.9+2026102503</InformationalVersion>
+    <Version>0.6.10</Version>
+    <FileVersion>0.6.10.1026</FileVersion>
+    <InformationalVersion>0.6.10+2026102601</InformationalVersion>
     <Product>轻舟</Product>
     <!-- ThemeMode (Fluent) is marked experimental. -->
     <NoWarn>$(NoWarn);WPF0001</NoWarn>

@@ -6,7 +6,14 @@ struct MoreScreen: View {
     var body: some View {
         NavigationStack {
             List {
+                Section("连接管理") {
+                    NavigationLink("aTrust 私有网络") { MobileCompanyScreen(company: appState.company) }
+                    NavigationLink("静态 ISP 出口") { MobileStaticExitScreen() }
+                    NavigationLink("节点组") { MobileGroupsScreen() }
+                }
                 Section("诊断") {
+                    NavigationLink("连接与站点检测") { MobileDiagnosticsScreen() }
+                    NavigationLink("ISP 线路测试与比较") { MobileChainScreen() }
                     LabeledContent(
                         "采集模式",
                         value: appState.diagnosticsSettings.mode == .deep ? "深度诊断" : "标准低功耗"
@@ -51,7 +58,7 @@ struct MoreScreen: View {
                         DiagnosticReportDetail()
                     }
                     NavigationLink("节点风险") {
-                        PlaceholderDetail(title: "节点风险", lines: ["后续复用桌面端 IP 风险语义"])
+                        MobileDiagnosticsScreen()
                     }
                 }
 

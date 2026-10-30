@@ -435,6 +435,12 @@ jobs:
               ".local/ios-go-cache",
               ".local/ios-clang-cache",
               "apps/iphone/ThirdParty/sing-box-src",
+              "packages/company-vpn/.local/go-cache",
+              "packages/company-vpn/.local/go-modules",
+              "packages/company-vpn/.local/go-path",
+              "packages/company-vpn/.local/mobile/libbox-source",
+              "packages/company-vpn/.local/mobile/company-source",
+              "packages/company-vpn/.local/mobile/gomobile-tools",
           ):
               path = Path(name)
               remove_rebuildable_tree(path)

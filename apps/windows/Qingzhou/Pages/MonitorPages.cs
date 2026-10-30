@@ -28,6 +28,7 @@ public sealed class DiagnosticsPage : PageBase
     readonly ListView riskTable = Ui.Table(SelectionMode.Single,
         ("节点", "Name", 240), ("出口 IP", "Ip", 130), ("风险", "Risk", 75), ("检测时间", "Checked", 140), ("说明", "Detail", 300));
     readonly TextBlock probeText = Ui.Text("", 14, secondary: true, wrap: true);
+    readonly TextBlock currentRisk = Ui.Note();
     public override FrameworkElement View => view;
 
     public DiagnosticsPage(Store store) : base(store)
@@ -49,9 +50,9 @@ public sealed class DiagnosticsPage : PageBase
         key = Ui.Button("配置风险密钥", EditKey);
         var risk = Rows(
             Ui.Bar(riskCount, Ui.Field("搜索", riskSearch), checkCurrent, checkAll, cancel),
-            Ui.Stack(4, progress, progressText, stopped),
+            currentRisk, Ui.Stack(4, progress, progressText, stopped),
             riskTable,
-            Ui.Note("全量检测覆盖所有订阅节点，会暂时逐个切换外网出口，结束或取消后恢复原出口；已有连接保留。需要已配置的 ipdata 密钥。"),
+            Ui.Note("全量检测通过独立入口逐个检测机场节点；当前实际出口单独检测，两类记录分别保留。需要已配置的 ipdata 密钥。"),
             Ui.Row(key, keyText),
             batchNote);
 
@@ -101,7 +102,7 @@ public sealed class DiagnosticsPage : PageBase
             if (c.At("chatgpt") is { } gpt)
             {
                 var ok = gpt.At("ok").Bool() == true;
-                Ui.Add(results, Check(ok ? "ChatGPT 网络响应正常" : "ChatGPT 网络响应异常", ok), 10);
+                Ui.Add(results, Check($"ChatGPT · {OverviewPage.ProbeText(gpt)}", ok), 10);
             }
             Ui.Add(results, Ui.Text($"出口 IP：{c.At("externalIp").Str() ?? "未取得"}", 14), 6);
             if (c.At("error").Str() is { } error) Ui.Add(results, Ui.Warning(error), 6);
@@ -124,6 +125,9 @@ public sealed class DiagnosticsPage : PageBase
         key.IsEnabled = ready && !S.RiskBatchRunning;
         keyText.Text = S.RiskKeyConfigured ? "密钥已加密保存在本机（Windows 数据保护）" : "尚未配置 ipdata 密钥。";
         riskCount.Text = $"{S.Risks.Count} 条保留记录";
+        currentRisk.Text = S.CurrentRisk is { } exitRisk
+            ? $"当前实际出口 · {exitRisk.At("ip").Str()} · {RiskLabel(exitRisk)} · {Ui.Date(exitRisk.At("checkedAt").Str())}"
+            : "当前出口风险待检测；下方保留的是机场节点风险记录。";
         batchNote.Text = S.RiskBatchNote ?? "";
 
         var p = S.RiskProgress;
@@ -395,7 +399,7 @@ public sealed class SettingsPage : PageBase
             box.Click += (_, _) => S.Act("保存网络设置", "native:preferences", new JsonObject { [key] = box.IsChecked == true });
             network[key] = (box, fallback);
         }
-        foreach (var (key, label) in new[] { ("mailMasterProxy8081", "网易邮箱大师代理 8081"), ("wechatImageSendFallback", "微信图片发送回退") })
+        foreach (var (key, label) in new[] { ("mailMasterDirect", "邮箱大师优先直连"), ("mailMasterProxy8081", "邮箱大师 8081 端口兼容"), ("wechatImageSendFallback", "微信直连优先与代理回退") })
         {
             var box = new CheckBox { Content = label };
             box.Click += (_, _) => S.Act("保存兼容设置", "routing:update",
@@ -408,7 +412,10 @@ public sealed class SettingsPage : PageBase
             Ui.Header("设置", "沿用现有配置，网络调整经校验后在线应用"),
             Section("界面外观", Ui.Field("显示模式", appearance)),
             Section("网络", network.Values.Select(v => (UIElement)v.Box).ToArray()),
-            Section("兼容规则", compat.Values.Select(v => (UIElement)v.Box).ToArray()),
+            Section("静态 ISP 出口", Ui.Note("机场 → 静态 ISP → 网站；保留直连与私有网络。"), Ui.Button("配置静态 ISP", () => StaticExitEditor.Show(S)), Ui.Button("比较 ISP 线路", () => S.Go("ISP 线路"))),
+            Section("兼容规则", compat.Values.Select(v => (UIElement)v.Box)
+                .Append(Ui.Text("邮箱大师全部连接优先直连，包括海外邮箱；自定义代理和私有网络规则仍优先。关闭后恢复常规分流。8081 端口兼容只保留原始连接目标。", 11, secondary: true, wrap: true))
+                .Append(Ui.Text("国内连接按直连规则处理；其余微信连接优先直连，直连检测失败后回退到代理。启用静态 ISP 时回退到该出口。自定义分流规则优先。", 11, secondary: true, wrap: true)).ToArray()),
             Section("启动与数据", login, dataDir, Ui.Row(
                 Ui.Button("打开数据目录", OpenData),
                 Ui.Button("重新读取当前配置", async () => await S.Refresh()))));

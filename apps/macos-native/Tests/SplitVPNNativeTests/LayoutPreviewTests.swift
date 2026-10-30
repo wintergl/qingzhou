@@ -57,10 +57,31 @@ final class LayoutPreviewTests: XCTestCase {
             rates: TrafficRate(upload: 24000, download: 850000), samples: samples, running: true)
         var snapshot = Bootstrap(status: populatedStatus, nodes: nodes, groups: [groupState], risks: risks, traffic: previewTraffic, legacyOwnerRunning: false, previewOnly: true, ownsRuntime: false, companyRouting: emptyRoute, dataDir: "/fixture-only")
         let schedule = #"""
-        {"automatic":true,"pausedReason":null,"connectivity":{"state":"ready","source":"automatic","checkedAt":"\#(fresh)","nextCheckAt":"\#(later)","intervalSeconds":300,"result":{"connectivity":{"domesticOk":true,"foreignOk":true,"externalIp":"203.0.113.8","latency":{"domesticMs":18,"foreignMs":183},"proxyOk":true}}},"websites":{"state":"ready","source":"automatic","checkedAt":"\#(fresh)","nextCheckAt":"\#(siteNext)","intervalSeconds":900,"result":{"proxyName":"日本 东京 · 示例节点","results":[{"id":"google","label":"Google","url":"https://www.google.com/generate_204","delay":183,"ok":true},{"id":"chatgpt","label":"ChatGPT","url":"https://chatgpt.com/cdn-cgi/trace","delay":null,"ok":false,"httpStatus":403,"failureReason":"restricted"},{"id":"claude","label":"Claude","url":"https://claude.ai","delay":612,"ok":true}]}}}
+        {"automatic":true,"pausedReason":null,"connectivity":{"state":"ready","source":"automatic","checkedAt":"\#(fresh)","nextCheckAt":"\#(later)","intervalSeconds":300,"result":{"connectivity":{"domesticOk":true,"foreignOk":false,"externalIp":"203.0.113.8","latency":{"domesticMs":18,"foreignMs":183},"proxyOk":true,"systemDns":{"ok":true},"chatgpt":{"ok":false,"httpStatus":403,"failureReason":"restricted"}}}},"websites":{"state":"ready","source":"automatic","checkedAt":"\#(fresh)","nextCheckAt":"\#(siteNext)","intervalSeconds":900,"result":{"proxyName":"日本 东京 · 示例节点","results":[{"id":"google","label":"Google","url":"https://www.google.com/generate_204","delay":183,"ok":true},{"id":"chatgpt","label":"ChatGPT","url":"https://chatgpt.com/cdn-cgi/trace","delay":null,"ok":false,"httpStatus":403,"failureReason":"restricted"},{"id":"claude","label":"Claude","url":"https://claude.ai","delay":612,"ok":true}]}}}
         """#
         snapshot.diagnostics = try JSONDecoder().decode(DiagnosticSchedule.self, from: Data(schedule.utf8))
+        snapshot.diagnostics?.websites.intervalSeconds = 900
+        var currentRisk = risks[0]
+        currentRisk.ip = "203.0.113.8"; currentRisk.checkedAt = fresh
+        currentRisk.scope = "current-exit"; currentRisk.viaStaticExit = false
+        snapshot.currentExitRisk = currentRisk
         let vpn = VPNStore(preview: snapshot)
+        var updatingSnapshot = snapshot
+        updatingSnapshot.diagnostics?.connectivity.state = "running"
+        updatingSnapshot.diagnostics?.connectivity.startedAt = fresh
+        updatingSnapshot.diagnostics?.connectivity.staleResult = true
+        updatingSnapshot.diagnostics?.websites.state = "running"
+        updatingSnapshot.diagnostics?.websites.startedAt = fresh
+        updatingSnapshot.diagnostics?.websites.staleResult = true
+        let updatingDiagnostics = VPNStore(preview: updatingSnapshot)
+        var failedSnapshot = snapshot
+        failedSnapshot.diagnostics?.connectivity.state = "error"
+        failedSnapshot.diagnostics?.connectivity.result = nil
+        failedSnapshot.diagnostics?.connectivity.error = "连接检测未完成，请检查网络后重试。"
+        failedSnapshot.diagnostics?.websites.state = "error"
+        failedSnapshot.diagnostics?.websites.result = nil
+        failedSnapshot.diagnostics?.websites.error = "站点检测未完成，请检查当前出口后重试。"
+        let failedDiagnostics = VPNStore(preview: failedSnapshot)
         // Use a fake transport for enabled control states; no production core,
         // account, keychain or networking service is started by this preview.
         let fake = MenuCoreModel()
@@ -84,7 +105,10 @@ final class LayoutPreviewTests: XCTestCase {
         interactiveSettings["selectedProxy"] = nodes[0].name
         interactiveStatus["settings"] = interactiveSettings; interactive["status"] = interactiveStatus
         let interactivePayload = try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: interactive))
-        let nodeDesignStore = VPNStore(core: CoreService { _, _ in interactivePayload }, loginItems: PreviewLoginItemService(), riskKeyVault: FixtureVault())
+        let nodeDesignStore = VPNStore(core: CoreService { channel, _ in
+            if channel == "nodes:list", case .object(let fields) = interactivePayload { return fields["nodes"] ?? .array([]) }
+            return interactivePayload
+        }, loginItems: PreviewLoginItemService(), riskKeyVault: FixtureVault())
         await nodeDesignStore.refresh()
         defer { nodeDesignStore.close() }
         func recoveryStore(_ payload: String) throws -> VPNStore {
@@ -99,6 +123,150 @@ final class LayoutPreviewTests: XCTestCase {
         let pendingLogin = VPNStore(preview: snapshot, loginItems: PreviewLoginItemService())
         let enabledLogin = VPNStore(preview: snapshot, loginItems: PreviewLoginItemService(current: .enabled))
         let legacyLogin = VPNStore(preview: snapshot, loginItems: PreviewLoginItemService(current: .needsRepair))
+        var chainPreview = ChainScanState(id: "fixture-scan", completed: 2, total: 2,
+            results: [ChainScanRow(identityKey: "fixture-fast", nodeName: "日本 东京 · 示例机场", status: "available", latencyMs: 180, jitterMs: 22, downloadMbps: 16.82, latencySuccesses: 3, latencyAttempts: 3, downloadSuccesses: 2, downloadAttempts: 2, exitIp: "203.0.113.8", errors: [], balancedScore: 53.80675891),
+                      ChainScanRow(identityKey: "fixture-slow", nodeName: "美国 西部 · 示例机场", status: "unstable", latencyMs: 350, jitterMs: 90, downloadMbps: 4.1, latencySuccesses: 2, latencyAttempts: 3, downloadSuccesses: 2, downloadAttempts: 2, exitIp: "203.0.113.8", errors: ["latency-failed"])], stale: false, recommendedIdentityKey: "fixture-fast", recommendationSummary: "本轮完整通过测试的链路中，这条综合表现排名第一，兼顾下载、响应与波动。")
+        chainPreview.results[0].rank = 1; chainPreview.results[0].testedAt = fresh
+        chainPreview.results[0].requiresRefresh = false
+        chainPreview.results[1].testedAt = fresh; chainPreview.results[1].requiresRefresh = false
+        chainPreview.leaders = ChainLeaders(balanced: "fixture-fast", download: "fixture-fast", latency: "fixture-fast")
+        var comparisonPreview = chainPreview
+        comparisonPreview.results = [
+            ChainScanRow(identityKey: "fixture-jp", nodeName: "日本 东京 · 均衡线路", status: "available", latencyMs: 96, jitterMs: 8, downloadMbps: 48.6, latencySuccesses: 3, latencyAttempts: 3, downloadSuccesses: 2, downloadAttempts: 2, exitIp: "203.0.113.8", errors: [], balancedScore: 68.2, testedAt: fresh, requiresRefresh: false, rank: 1),
+            ChainScanRow(identityKey: "fixture-us", nodeName: "美国 洛杉矶 · 高速下载", status: "available", latencyMs: 225, jitterMs: 25, downloadMbps: 92.4, latencySuccesses: 3, latencyAttempts: 3, downloadSuccesses: 2, downloadAttempts: 2, exitIp: "203.0.113.8", errors: [], balancedScore: 57.8, testedAt: fresh, requiresRefresh: false, rank: 2),
+            ChainScanRow(identityKey: "compare-sg", nodeName: "新加坡 · 低延迟线路", status: "available", latencyMs: 42, jitterMs: 4, downloadMbps: 8.5, latencySuccesses: 3, latencyAttempts: 3, downloadSuccesses: 2, downloadAttempts: 2, exitIp: "203.0.113.8", errors: [], balancedScore: 56.1, testedAt: fresh, requiresRefresh: false, rank: 3),
+            ChainScanRow(identityKey: "compare-old", nodeName: "香港 · 上次测量", status: "available", latencyMs: 35, jitterMs: 4, downloadMbps: 120, latencySuccesses: 3, latencyAttempts: 3, downloadSuccesses: 2, downloadAttempts: 2, exitIp: "203.0.113.8", errors: [], balancedScore: 84.3, testedAt: "2026-10-20T10:00:00Z", requiresRefresh: true, rank: 4),
+            ChainScanRow(identityKey: "compare-failed", nodeName: "韩国 · 出口未通过", status: "unstable", latencyMs: 70, jitterMs: 15, downloadMbps: 34, latencySuccesses: 3, latencyAttempts: 3, downloadSuccesses: 2, downloadAttempts: 2, exitIp: nil, errors: ["exit-ip-failed"], testedAt: fresh, requiresRefresh: false)
+        ]
+        comparisonPreview.completed = 5; comparisonPreview.total = 8
+        comparisonPreview.recommendedIdentityKey = "fixture-jp"
+        comparisonPreview.leaders = ChainLeaders(balanced: "fixture-jp", download: "fixture-us", latency: "compare-sg")
+        comparisonPreview.canUseCachedResults = true; comparisonPreview.stopReason = "completed"
+        var failedComparison = comparisonPreview
+        failedComparison.results = [comparisonPreview.results[4]]
+        failedComparison.recommendedIdentityKey = nil; failedComparison.leaders = ChainLeaders()
+        let emptyComparison = ChainScanState()
+        var ispSnapshot = snapshot
+        ispSnapshot.status.settings.staticExit = StaticExitConfiguration(enabled: true, protocol: "socks5", server: "proxy.example.test", port: 1080, username: "fixture", expectedIp: "203.0.113.8")
+        ispSnapshot.chainScan = ChainScanActivity(running: true, mode: "continuous", testing: false, completed: 7, total: 8)
+        let ispHome = VPNStore(preview: ispSnapshot)
+        var ispOffSnapshot = ispSnapshot
+        ispOffSnapshot.status.settings.staticExit?.enabled = false
+        let ispOffHome = VPNStore(preview: ispOffSnapshot)
+        func workflowStore(running: Bool, enabled: Bool, usePhase: String? = nil) async throws -> VPNStore {
+            var payload = interactive
+            var payloadStatus = payload["status"] as! [String: Any]
+            var settings = payloadStatus["settings"] as! [String: Any]
+            var exit = ispSnapshot.status.settings.staticExit!.payload; exit["enabled"] = enabled
+            settings["staticExit"] = exit
+            settings["selectedProxy"] = comparisonPreview.results[0].nodeName
+            payloadStatus["settings"] = settings
+            payloadStatus["mihomo"] = ["state": usePhase == "recovery" ? "error" : running ? "running" : "stopped", "mode": "vpn"]
+            payload["status"] = payloadStatus
+            var inventory = payload["nodes"] as! [[String: Any]]
+            for row in comparisonPreview.results {
+                if let index = inventory.firstIndex(where: { $0["identityKey"] as? String == row.id }) { inventory[index]["name"] = row.nodeName }
+                else { inventory.append(["name":row.nodeName,"type":"http","identityKey":row.id,"selected":false]) }
+            }
+            for index in inventory.indices where inventory[index]["identityKey"] != nil {
+                inventory[index]["subscriptionId"] = inventory[index]["identityKey"] as? String == "fixture-jp" ? "fixture-other" : "fixture-subscription"
+            }
+            var subscriptions = payloadStatus["subscription"] as! [String: Any]
+            subscriptions["entries"] = [["id":"fixture-subscription","name":"示例机场 A","url":"https://example.test/subscription","enabled":true,"nodeCount":inventory.count-1,"status":"ready"], ["id":"fixture-other","name":"示例机场 B","url":"https://example.test/other","enabled":true,"nodeCount":1,"status":"ready"]]
+            payloadStatus["subscription"] = subscriptions; payload["status"] = payloadStatus
+            payload["nodes"] = inventory
+            payload["ownsRuntime"] = running
+            let value = try JSONDecoder().decode(JSONValue.self, from: JSONSerialization.data(withJSONObject: payload))
+            var operationID = ""
+            let store = VPNStore(core: CoreService { channel, request in
+                if channel == "chain-scan:use", usePhase != nil {
+                    operationID = request["operationId"] as! String
+                    throw CoreService.CoreError.uncertain("模拟等待连接确认")
+                }
+                if channel == "chain-scan:use-state", let usePhase {
+                    if usePhase == "unknown" { return .null }
+                    return .object(["operationId":.string(operationID),"nodeName":.string(comparisonPreview.results[0].nodeName),"phase":.string(usePhase == "recovery" ? "failed" : usePhase),"finished":.bool(usePhase == "recovery"),"cancelRequested":.bool(false),"error":usePhase == "recovery" ? .string("原连接恢复尚未确认，恢复记录已保留。") : .null])
+                }
+                return value
+            }, loginItems: PreviewLoginItemService(), riskKeyVault: FixtureVault())
+            await store.refresh()
+            if usePhase != nil { await store.useChainRoute(comparisonPreview.results[0], scanID:"preview", strategy:"balanced") }
+            return store
+        }
+        let workflowOffline = try await workflowStore(running: false, enabled: false)
+        let workflowReady = try await workflowStore(running: true, enabled: true)
+        let useConfirming = try await workflowStore(running: true, enabled: true, usePhase: "confirming")
+        let useUnknown = try await workflowStore(running: true, enabled: true, usePhase: "unknown")
+        let useRecovery = try await workflowStore(running: true, enabled: true, usePhase: "recovery")
+        defer { workflowOffline.close(); workflowReady.close(); useConfirming.close(); useUnknown.close(); useRecovery.close() }
+        var subscriptionPreview = comparisonPreview
+        var scopeRows = Array(comparisonPreview.results.dropFirst())
+        for index in scopeRows.indices { if scopeRows[index].rank != nil { scopeRows[index].rank! -= 1 } }
+        scopeRows[0].comparisonReason = "已测综合第一 · 相对当前线路：下载快 90% · 响应慢 129 ms · 波动更大 17 ms"
+        scopeRows[1].comparisonReason = "相对当前线路：下载慢 83% · 响应快 54 ms · 波动更小 4 ms"
+        subscriptionPreview.view = ChainScanScopeView(subscriptionId: "fixture-subscription", results: scopeRows,
+            leaders: ChainLeaders(balanced: "fixture-us", download: "fixture-us", latency: "compare-sg"), recommendedIdentityKey: "fixture-us",
+            recommendationSummary: "本订阅近期完整成绩中综合排名第一。", progress: ChainScanProgress(total: 10, completed: 4, remaining: 6))
+        var progressPreview = subscriptionPreview
+        progressPreview.running = true; progressPreview.mode = "accumulate"; progressPreview.testing = true
+        progressPreview.view?.progress = ChainScanProgress(total: 10, completed: 4, remaining: 6, estimatedSeconds: 95,
+            stage: "download", stageAttempt: 1, stageTotal: 2, currentNode: "美国 洛杉矶 · 高速下载")
+        var progressWait = progressPreview
+        progressWait.waitingReason = "network-unavailable"; progressWait.view?.progress?.estimatedSeconds = nil
+        progressWait.view?.progress?.stage = nil; progressWait.view?.progress?.currentNode = nil
+        var progressContinuous = progressPreview
+        progressContinuous.mode = "continuous"; progressContinuous.testing = false
+        progressContinuous.view?.progress = ChainScanProgress(total: 10, completed: 4, remaining: 6,
+            nextTestAt: ISO8601DateFormatter().string(from: Date().addingTimeInterval(60)), earliestRetryAt: later)
+        let autoConfiguration = ChainAutoRefreshState(enabled: true, intervalMinutes: 30, paused: false, status: "running")
+        var autoPreview = progressContinuous
+        autoPreview.automatic = true; autoPreview.autoRefresh = autoConfiguration
+        var queuedPreview = comparisonPreview
+        queuedPreview.running = true; queuedPreview.mode = "continuous"; queuedPreview.testing = false
+        queuedPreview.queuedIdentityKeys = ["fixture-jp"]
+        var inUsePreview = comparisonPreview; inUsePreview.connectedIdentityKey = "fixture-jp"
+        var dailyPreview = comparisonPreview
+        dailyPreview.results[0].testedAt = stamp; dailyPreview.results[0].requiresRefresh = true
+        dailyPreview.results[0].connectionEligible = true
+        dailyPreview.results[3].rank = 1; dailyPreview.results[0].rank = 2
+        dailyPreview.results[1].rank = 3; dailyPreview.results[2].rank = 4
+        dailyPreview.recommendedIdentityKey = "compare-old"
+        dailyPreview.leaders = ChainLeaders(balanced: "compare-old", download: "compare-old", latency: "compare-old")
+        dailyPreview.results = [dailyPreview.results[3], dailyPreview.results[0], dailyPreview.results[1], dailyPreview.results[2], dailyPreview.results[4]]
+        dailyPreview.routine = ChainRoutineState(connectionState: "connected", currentSelectionConfirmed: true,
+            currentIdentityKey: "fixture-jp", currentNodeName: "日本 东京 · 均衡线路",
+            verification: ChainVerificationState(status: "passed", checkedAt: fresh), performanceTestedAt: stamp,
+            maintenanceIdentityKeys: dailyPreview.results.map(\.id),
+            backupIdentityKeys: dailyPreview.results.filter { $0.id != "fixture-jp" }.map(\.id))
+        for index in dailyPreview.results.indices {
+            dailyPreview.results[index].subscriptionName = ["fixture-us", "compare-sg"].contains(dailyPreview.results[index].id) ? "示例机场 A" : "示例机场 B"
+            if dailyPreview.results[index].id == "compare-failed" {
+                dailyPreview.results[index].status = "available"
+                dailyPreview.results[index].nodeName = "韩国 首尔 · 备用线路"
+                dailyPreview.results[index].exitIp = "203.0.113.8"
+                dailyPreview.results[index].errors = []
+                dailyPreview.results[index].connectionEligible = true
+                dailyPreview.results[index].balancedScore = 60
+            }
+        }
+        func switchingStore(failed: Bool) async throws -> VPNStore {
+            let store = try await workflowStore(running: true, enabled: true)
+            let id = UUID().uuidString
+            store.receiveChainUse(ChainUseState(operationId: id, identityKey: "fixture-us", nodeName: "美国 洛杉矶 · 高速下载", phase: "verifying",
+                automatic: true, previousNodeName: "日本 东京 · 均衡线路"))
+            if failed {
+                store.receiveChainUse(ChainUseState(operationId: id, identityKey: "fixture-us", nodeName: "美国 洛杉矶 · 高速下载", phase: "failed", finished: true,
+                    error: "目标线路响应复核超时，请稍后重试或换一条备用线路；原配置与连接未改动。", automatic: true, previousNodeName: "日本 东京 · 均衡线路"))
+            }
+            return store
+        }
+        let switchingPreviewStore = try await switchingStore(failed: false)
+        let failedSwitchPreviewStore = try await switchingStore(failed: true)
+        defer { switchingPreviewStore.close(); failedSwitchPreviewStore.close() }
+        var backgroundPreview = chainPreview
+        backgroundPreview.running = true; backgroundPreview.mode = "continuous"
+        backgroundPreview.testing = false; backgroundPreview.canUseCachedResults = true
+        backgroundPreview.completed = 7
         let pageFilter = ProcessInfo.processInfo.environment["SPLITVPN_LAYOUT_PAGES"]?.split(separator: ",").map(String.init)
         let probe = ProbeInfo(origin: "https://vpn.example.invalid", fingerprint: String(repeating: "AB:", count: 31) + "AB", subject: "示例接入网关", validTo: "2099-01-01T00:00:00Z", nameMatches: true, selfSigned: false, methods: [AuthMethod(loginDomain: "local", authType: "auth/psw", authName: "接入账号")])
         let loggedOut = CompanyStore(credentialVault: FixtureVault(), preferences: defaults, preview: CompanyPreview(probe: probe))
@@ -127,7 +295,18 @@ final class LayoutPreviewTests: XCTestCase {
         var directDraft = RoutingRuleDraft(); directDraft.outlet = .direct; directDraft.address = "192.0.2.0/24"
         var vpnDraft = RoutingRuleDraft(); vpnDraft.address = "https://example.test/path"
         nodeDesignStore.page = .nodes
-        for (name, view) in [("overview-recovering", AnyView(OverviewView(store: recovering, company: connected))),
+        var waitingChainPreview = backgroundPreview
+        waitingChainPreview.waitingReason = "network-unavailable"
+        var oldChainPreview = chainPreview
+        for index in oldChainPreview.results.indices {
+            oldChainPreview.results[index].requiresRefresh = true
+            oldChainPreview.results[index].testedAt = "2026-10-20T10:00:00Z"
+        }
+        for (name, view) in [("diagnostics-updating", AnyView(DiagnosticsView(store: updatingDiagnostics))),
+                              ("diagnostics-error", AnyView(DiagnosticsView(store: failedDiagnostics))),
+                              ("overview-updating", AnyView(OverviewView(store: updatingDiagnostics, company: connected))),
+                              ("overview-error", AnyView(OverviewView(store: failedDiagnostics, company: connected))),
+                              ("overview-recovering", AnyView(OverviewView(store: recovering, company: connected))),
                               ("overview-restored", AnyView(OverviewView(store: restored, company: connected))),
                               ("overview-recovery-failed", AnyView(OverviewView(store: failedRecovery, company: connected))),
                               ("diagnostics-recovery", AnyView(DiagnosticsView(store: restored))),
@@ -154,6 +333,38 @@ final class LayoutPreviewTests: XCTestCase {
                               ("routing", AnyView(RoutingView(store: vpn))),
                               ("routing-editor-vpn", AnyView(RoutingRuleEditor(store: vpn, draft: vpnDraft, normalized: NormalizedRoutingRule(rule: "DOMAIN-SUFFIX,example.test", kind: "DOMAIN-SUFFIX", value: "example.test")).frame(maxWidth: .infinity, maxHeight: .infinity))),
                               ("routing-editor-direct", AnyView(RoutingRuleEditor(store: vpn, draft: directDraft, normalized: NormalizedRoutingRule(rule: "IP-CIDR,192.0.2.0/24", kind: "IP-CIDR", value: "192.0.2.0/24")).frame(maxWidth: .infinity, maxHeight: .infinity))),
+                              ("chain-scanner", AnyView(ChainScannerView(store: nodeDesignStore, preview: chainPreview))),
+                              ("chain-scanner-background", AnyView(ChainScannerView(store: nodeDesignStore, preview: backgroundPreview))),
+                              ("isp-test-history", AnyView(ChainHistoryView(store: ispOffHome, preview: true, records: [ChainHistoryRecord(recordId: "fixture-1", scanId: "fixture", sameEnvironment: true, observation: oldChainPreview.results[0]), ChainHistoryRecord(recordId: "fixture-2", scanId: "older", sameEnvironment: false, observation: oldChainPreview.results[0])]).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))),
+                              ("isp-test-waiting", AnyView(ChainScannerView(store: ispOffHome, preview: waitingChainPreview, standalone: true))),
+                              ("isp-comparison-empty", AnyView(ChainScannerView(store: ispOffHome, preview: emptyComparison, standalone: true))),
+                              ("isp-comparison-failed", AnyView(ChainScannerView(store: ispOffHome, preview: failedComparison, standalone: true))),
+                              ("isp-comparison", AnyView(ChainScannerView(store: workflowOffline, preview: comparisonPreview, standalone: true))),
+                              ("isp-daily", AnyView(ChainScannerView(store: workflowReady, preview: dailyPreview, standalone: true))),
+                              ("isp-switching", AnyView(ChainScannerView(store: switchingPreviewStore, preview: dailyPreview, standalone: true))),
+                              ("isp-switch-failed", AnyView(ChainScannerView(store: failedSwitchPreviewStore, preview: dailyPreview, standalone: true))),
+                              ("isp-overview-top", AnyView(OverviewView(store: workflowReady, company: loggedOut))),
+                              ("isp-daily-advanced", AnyView(ChainScannerView(store: workflowReady, preview: dailyPreview, detailsExpanded: true, standalone: true))),
+                              ("isp-subscription", AnyView(ChainScannerView(store: workflowReady, preview: subscriptionPreview, standalone: true, subscriptionID: "fixture-subscription"))),
+                              ("isp-progress", AnyView(ChainScannerView(store: workflowReady, preview: progressPreview, standalone: true, subscriptionID: "fixture-subscription"))),
+                              ("isp-auto-running", AnyView(ChainScannerView(store: workflowReady, preview: autoPreview, standalone: true, subscriptionID: "fixture-subscription"))),
+                              ("isp-auto-settings", AnyView(ChainAutomaticRefreshView(configuration: autoConfiguration, working: false, close: {}, save: { _,_ in }).frame(maxWidth: .infinity, maxHeight: .infinity))),
+                              ("isp-progress-wait", AnyView(ChainScannerView(store: workflowReady, preview: progressWait, standalone: true, subscriptionID: "fixture-subscription"))),
+                              ("isp-progress-continuous", AnyView(ChainScannerView(store: workflowReady, preview: progressContinuous, standalone: true, subscriptionID: "fixture-subscription"))),
+                              ("isp-workflow-ready", AnyView(ChainScannerView(store: workflowReady, preview: comparisonPreview, standalone: true))),
+                              ("isp-workflow-queued", AnyView(ChainScannerView(store: workflowOffline, preview: queuedPreview, standalone: true))),
+                              ("isp-workflow-inuse", AnyView(ChainScannerView(store: workflowReady, preview: inUsePreview, standalone: true))),
+                              ("isp-use-confirming", AnyView(ChainScannerView(store: useConfirming, preview: comparisonPreview, standalone: true))),
+                              ("isp-use-unknown", AnyView(ChainScannerView(store: useUnknown, preview: comparisonPreview, standalone: true))),
+                              ("isp-use-recovery", AnyView(ChainScannerView(store: useRecovery, preview: comparisonPreview, standalone: true))),
+                              ("isp-use-failed", AnyView(ChainUseStatusView(state: ChainUseState(operationId: "preview", nodeName: "东京 · 中转 01", phase: "failed", finished: true, error: "实际出口尚未确认；原配置与线路已恢复。"), cancel: {}, refresh: {}).padding(24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))),
+                              ("isp-connection-prepare", AnyView(ChainConnectionPreparationView(store: workflowOffline, target: comparisonPreview.results[0], close: {}, apply: {}).frame(maxWidth: .infinity, maxHeight: .infinity))),
+                              ("isp-test-old", AnyView(ChainScannerView(store: ispOffHome, preview: oldChainPreview, detailsExpanded: true, standalone: true))),
+                              ("isp-test-page", AnyView(ChainScannerView(store: ispOffHome, preview: chainPreview, standalone: true))),
+                              ("chain-scanner-details", AnyView(ChainScannerView(store: nodeDesignStore, preview: chainPreview, detailsExpanded: true))),
+                              ("overview-isp", AnyView(OverviewView(store: ispHome, company: connected))),
+                              ("overview-isp-off", AnyView(OverviewView(store: ispOffHome, company: connected))),
+                              ("static-exit", AnyView(Form { StaticExitSettingsView(store: nodeDesignStore) }.formStyle(.grouped))),
                               ("settings", AnyView(SettingsView(store: vpn).frame(maxWidth: .infinity, maxHeight: .infinity))),
                               ("settings-login-approval", AnyView(SettingsView(store: pendingLogin).frame(maxWidth: .infinity, maxHeight: .infinity))),
                               ("settings-login-enabled", AnyView(SettingsView(store: enabledLogin).frame(maxWidth: .infinity, maxHeight: .infinity))),
@@ -164,7 +375,7 @@ final class LayoutPreviewTests: XCTestCase {
                               ("diagnostics-risk", AnyView(DiagnosticsView(store: vpn, section: "节点风险"))),
                               ("diagnostics-subscription", AnyView(DiagnosticsView(store: vpn, section: "订阅探测")))] {
             if let pageFilter, !pageFilter.contains(name) { continue }
-            let sizes = name.hasPrefix("shell-") ? [NSSize(width: 1120, height: 760), NSSize(width: 1440, height: 960)] : [NSSize(width: 840, height: 640), NSSize(width: 1040, height: 780)]
+            let sizes = name.hasPrefix("shell-") ? [NSSize(width: 960, height: 720), NSSize(width: 1120, height: 760), NSSize(width: 1440, height: 960)] : name.hasPrefix("isp-") ? [NSSize(width: 740, height: 600), NSSize(width: 840, height: 640), NSSize(width: 1040, height: 780)] : [NSSize(width: 840, height: 640), NSSize(width: 1040, height: 780)]
             for size in sizes {
               for scheme in [ColorScheme.light, .dark] {
                 defaults.set(scheme == .dark ? "dark" : "light", forKey: "previewAppearance")

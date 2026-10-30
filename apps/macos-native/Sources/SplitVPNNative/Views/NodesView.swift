@@ -56,6 +56,9 @@ struct NodesView: View {
             }
             if compact { compactSummary } else { connectionSummary }
             controls
+            if let error = store.nodesError {
+                Text("节点读取失败：\(error)").font(.system(size: 12)).foregroundStyle(VPNTheme.warning)
+            }
             nodeTable
             progressStrip
             actions
@@ -63,6 +66,7 @@ struct NodesView: View {
                 .font(.system(size: 11)).foregroundStyle(VPNTheme.secondary)
         }.padding(compact ? 20 : 24).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .task(id: store.previewOnly) { await store.refreshNodes() }
     }
     private var compactSummary: some View {
         HStack(spacing: 10) {
@@ -139,25 +143,25 @@ struct NodesView: View {
                             .font(.system(size: 10)).foregroundStyle(picked ? Color.white.opacity(0.82) : VPNTheme.secondary).lineLimit(1)
                     }
                 }.padding(.vertical, 4)
-            }.width(min: 190, ideal: 285, max: .infinity)
-            TableColumn("连接质量") { node in NodeLatencyCell(node: node, testing: store.speedTestingNode == node.name, selected: brightSelection(node)) }.width(118)
+            }.width(min: 170, ideal: 210, max: .infinity)
+            TableColumn("连接质量") { node in NodeLatencyCell(node: node, testing: store.speedTestingNode == node.name, selected: brightSelection(node)) }.width(96)
             TableColumn("最近测速") { node in
                 VStack(alignment: .leading, spacing: 5) {
                     Text(node.latencyCheckedAt.map(MeasurementTime.clock) ?? "—").monospacedDigit().font(.system(size: 11, weight: .medium))
                     Text(node.latencyCheckedAt == nil ? "尚无记录" : node.latencySource == "engine" ? "自动探测" : "手动测速")
                         .font(.system(size: 10)).opacity(0.8)
                 }.foregroundStyle(brightSelection(node) ? Color.white : VPNTheme.secondary).help(dateText(node.latencyCheckedAt))
-            }.width(88)
+            }.width(76)
             TableColumn("位置") { node in
                 Text([node.location?.country, node.location?.city].compactMap { $0 }.joined(separator: " · ").isEmpty ? "未识别" : [node.location?.country, node.location?.city].compactMap { $0 }.joined(separator: " · "))
                     .font(.system(size: 11)).foregroundStyle(brightSelection(node) ? Color.white.opacity(0.9) : VPNTheme.secondary).lineLimit(1)
-            }.width(100)
+            }.width(80)
             TableColumn("IP 风险") { node in
                 let risk = node.identityAmbiguous == true ? nil : store.risks.first { $0.nodeName == node.name }
                 Text(risk?.label ?? "未检测").font(.system(size: 11))
                     .foregroundStyle(brightSelection(node) ? Color.white : risk?.riskLevel == "high" ? VPNTheme.destructive : risk?.riskLevel == "medium" ? VPNTheme.warning : VPNTheme.secondary)
                     .help(risk.map { "\(dateText($0.checkedAt)) · \($0.error ?? $0.reasons.joined(separator: "、"))" } ?? "IP 风险不代表节点的连接质量。")
-            }.width(65)
+            }.width(60)
             TableColumn("") { node in
                 Button { store.toggleFavorite(node) } label: { Image(systemName: store.favoriteNames.contains(node.name) ? "star.fill" : "star") }
                     .buttonStyle(.plain).foregroundStyle(brightSelection(node) ? Color.white : store.favoriteNames.contains(node.name) ? VPNTheme.warning : VPNTheme.secondary.opacity(0.65))
@@ -201,6 +205,9 @@ struct NodesView: View {
             Button("设为当前出口") { if let node = selected.first { store.select(node) } }.buttonStyle(VPNButtonStyle(prominent: true)).disabled(selected.count != 1 || !store.canMutate)
             Button("测速所选") { store.startNodeSpeed(selected) }.disabled(selected.isEmpty || !canTest)
             Button("测速列表") { store.startNodeSpeed(filtered) }.disabled(filtered.isEmpty || !canTest)
+            if store.status?.settings.staticExit?.enabled == true {
+                Button("ISP 测试") { store.page = .ispTest }.disabled(!store.canMutate)
+            }
             Spacer(minLength: 0)
             Menu("更多") {
                 Button("多站点复测所选节点") { if let node = selected.first, let key = node.identityKey { store.action("多站点复测", channel: "nodes:test-recommended", payload: ["identityKey": key]) } }.disabled(selected.count != 1 || selected.first?.identityKey == nil || !canTest)

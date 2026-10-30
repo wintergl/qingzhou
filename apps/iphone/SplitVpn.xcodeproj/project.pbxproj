@@ -43,6 +43,25 @@
 		100000000000000000000028 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000027 /* Theme.swift */; };
 		100000000000000000000027 /* SplitVpnCore.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026 /* SplitVpnCore.xcframework */; };
 		100000000000000000000031 /* TunnelRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 200000000000000000000031 /* TunnelRecoveryPolicy.swift */; };
+		FD88556C920318D00EA081F7 /* MobileFeatures.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF9FBEECF79D37FECA0D4F2A /* MobileFeatures.swift */; };
+		D7B44748FCA93A3ED154B27C /* ManagementScreens.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0F321F64613E7AC652B7506A /* ManagementScreens.swift */; };
+		3DB665A0441F60756B025C4C /* MobileSecretVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5F171557DDD4C59A2309252 /* MobileSecretVault.swift */; };
+        E10000000000000000000001 /* Libbox in App */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001C; };
+        E10000000000000000000002 /* Rust in Extension */ = {isa = PBXBuildFile; fileRef = 200000000000000000000026; };
+        E10000000000000000000003 /* libresolv in App */ = {isa = PBXBuildFile; fileRef = 20000000000000000000001E; };
+		578F051CD530256B6990BA38 /* MobileCoreBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803D0B68BD06FDA28187E055; };
+		00621F8A60ECCD64C01B5F2A /* MobileCoreBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 803D0B68BD06FDA28187E055; };
+		72543C5E0FFE4DC2013315D0 /* CompanyTransferBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CAD78DA0EBDDF70CCE4DB39; };
+		7471C4E45D0EB333C3BDF515 /* CompanyTransferBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CAD78DA0EBDDF70CCE4DB39; };
+		75C35DF496E38431D29A274A /* CompanyUnderlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC5ED490DA4482D50CEF813; };
+		4BE2EA4D97385156A8E60896 /* CompanyUnderlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4FC5ED490DA4482D50CEF813; };
+		43E55DC541256B6E96D9C361 /* CompanyTunnelService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92E34AC6B9282934B137B5EB; };
+		D4ED4358B7B922D674BBF466 /* CompanySDK.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96E48F69BC6B4726416774FA; };
+		3552DECA9EF07E6C83BD29A6 /* CompanySDK.swift in Sources */ = {isa = PBXBuildFile; fileRef = 96E48F69BC6B4726416774FA; };
+		D56CE3B97875EE3A376A3784 /* MobileCompanyStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D717C639AF8EA9245D544CA1; };
+		E5C9BA785B9ECBCEC093BB71 /* MobileCompanyScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = A03491B6C43E7AD0A33A2F29; };
+		E2983C2CD5F8F2A8D936630E /* company-core-LICENSE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 3215EC39CA80CBFC1D0A8604; };
+		0C980CD9F309E42B94B93B27 /* mobile-core-NOTICE.txt in Resources */ = {isa = PBXBuildFile; fileRef = 5EB92D20888B9F45077D21D4; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -95,7 +114,7 @@
 		200000000000000000000019 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		20000000000000000000001A /* SplitVpnPacketTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = SplitVpnPacketTunnel.entitlements; sourceTree = "<group>"; };
 		20000000000000000000001B /* LibboxPacketTunnelCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibboxPacketTunnelCore.swift; sourceTree = "<group>"; };
-		20000000000000000000001C /* Libbox.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ThirdParty/SingBoxFrameworks/Libbox.xcframework; sourceTree = "<group>"; };
+		20000000000000000000001C /* Libbox.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ../../packages/company-vpn/.local/mobile/Libbox.xcframework; sourceTree = "<group>"; };
 		20000000000000000000001D /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		20000000000000000000001E /* libresolv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libresolv.tbd; path = usr/lib/libresolv.tbd; sourceTree = SDKROOT; };
 		20000000000000000000001F /* Signing.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Signing.xcconfig; sourceTree = "<group>"; };
@@ -108,6 +127,18 @@
 		200000000000000000000027 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		200000000000000000000026 /* SplitVpnCore.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ThirdParty/CoreFrameworks/SplitVpnCore.xcframework; sourceTree = "<group>"; };
 		200000000000000000000031 /* TunnelRecoveryPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelRecoveryPolicy.swift; sourceTree = "<group>"; };
+		BF9FBEECF79D37FECA0D4F2A /* MobileFeatures.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileFeatures.swift; sourceTree = "<group>"; };
+		0F321F64613E7AC652B7506A /* ManagementScreens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagementScreens.swift; sourceTree = "<group>"; };
+		D5F171557DDD4C59A2309252 /* MobileSecretVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileSecretVault.swift; sourceTree = "<group>"; };
+		803D0B68BD06FDA28187E055 /* MobileCoreBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileCoreBridge.swift; sourceTree = "<group>"; };
+		3CAD78DA0EBDDF70CCE4DB39 /* CompanyTransferBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanyTransferBuffer.swift; sourceTree = "<group>"; };
+		4FC5ED490DA4482D50CEF813 /* CompanyUnderlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanyUnderlay.swift; sourceTree = "<group>"; };
+		92E34AC6B9282934B137B5EB /* CompanyTunnelService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanyTunnelService.swift; sourceTree = "<group>"; };
+		96E48F69BC6B4726416774FA /* CompanySDK.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanySDK.swift; sourceTree = "<group>"; };
+		D717C639AF8EA9245D544CA1 /* MobileCompanyStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileCompanyStore.swift; sourceTree = "<group>"; };
+		A03491B6C43E7AD0A33A2F29 /* MobileCompanyScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MobileCompanyScreen.swift; sourceTree = "<group>"; };
+		3215EC39CA80CBFC1D0A8604 /* company-core-LICENSE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "company-core-LICENSE.txt"; sourceTree = "<group>"; };
+		5EB92D20888B9F45077D21D4 /* mobile-core-NOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "mobile-core-NOTICE.txt"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -116,6 +147,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				100000000000000000000027 /* SplitVpnCore.xcframework in Frameworks */,
+                E10000000000000000000001,
+                E10000000000000000000003,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -124,6 +157,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				10000000000000000000001D /* Libbox.xcframework in Frameworks */,
+                E10000000000000000000002,
 				10000000000000000000001F /* UIKit.framework in Frameworks */,
 				100000000000000000000020 /* libresolv.tbd in Frameworks */,
 			);
@@ -175,6 +209,8 @@
 		800000000000000000000004 /* Screens */ = {
 			isa = PBXGroup;
 			children = (
+                A03491B6C43E7AD0A33A2F29 /* MobileCompanyScreen.swift */,
+				0F321F64613E7AC652B7506A /* ManagementScreens.swift */,
 				200000000000000000000006 /* ConnectScreen.swift */,
 				200000000000000000000007 /* SubscriptionScreen.swift */,
 				200000000000000000000008 /* NodesScreen.swift */,
@@ -187,6 +223,8 @@
 		800000000000000000000005 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+                D717C639AF8EA9245D544CA1 /* MobileCompanyStore.swift */,
+				BF9FBEECF79D37FECA0D4F2A /* MobileFeatures.swift */,
 				200000000000000000000003 /* SplitVpnAppState.swift */,
 				200000000000000000000004 /* SubscriptionService.swift */,
 				200000000000000000000025 /* CoreClient.swift */,
@@ -200,6 +238,7 @@
 		800000000000000000000006 /* PacketTunnel */ = {
 			isa = PBXGroup;
 			children = (
+                92E34AC6B9282934B137B5EB /* CompanyTunnelService.swift */,
 				200000000000000000000019 /* Info.plist */,
 				20000000000000000000001A /* SplitVpnPacketTunnel.entitlements */,
 				20000000000000000000000D /* PacketTunnelProvider.swift */,
@@ -212,6 +251,11 @@
 		800000000000000000000007 /* Shared */ = {
 			isa = PBXGroup;
 			children = (
+                96E48F69BC6B4726416774FA /* CompanySDK.swift */,
+                4FC5ED490DA4482D50CEF813 /* CompanyUnderlay.swift */,
+                3CAD78DA0EBDDF70CCE4DB39 /* CompanyTransferBuffer.swift */,
+                803D0B68BD06FDA28187E055 /* MobileCoreBridge.swift */,
+				D5F171557DDD4C59A2309252 /* MobileSecretVault.swift */,
 				200000000000000000000010 /* SplitVpnModels.swift */,
 				200000000000000000000031 /* TunnelRecoveryPolicy.swift */,
 				200000000000000000000011 /* DefaultRules.swift */,
@@ -224,6 +268,8 @@
 		800000000000000000000008 /* Resources */ = {
 			isa = PBXGroup;
 			children = (
+                5EB92D20888B9F45077D21D4,
+                3215EC39CA80CBFC1D0A8604,
 					800000000000000000000009 /* defaults */,
 					200000000000000000000021 /* geoip-cn.srs */,
 					200000000000000000000022 /* geosite-cn.srs */,
@@ -330,6 +376,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                0C980CD9F309E42B94B93B27,
+                E2983C2CD5F8F2A8D936630E,
 				10000000000000000000000B /* Assets.xcassets in Resources */,
 					10000000000000000000000C /* vpn-domains.json in Resources */,
 					100000000000000000000022 /* geoip-cn.srs in Resources */,
@@ -367,7 +415,16 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                E5C9BA785B9ECBCEC093BB71,
+                D56CE3B97875EE3A376A3784,
+                D4ED4358B7B922D674BBF466,
+                75C35DF496E38431D29A274A,
+                72543C5E0FFE4DC2013315D0,
+                578F051CD530256B6990BA38,
 				100000000000000000000001 /* SplitVpnIphoneApp.swift in Sources */,
+				3DB665A0441F60756B025C4C /* MobileSecretVault.swift in Sources */,
+				D7B44748FCA93A3ED154B27C /* ManagementScreens.swift in Sources */,
+				FD88556C920318D00EA081F7 /* MobileFeatures.swift in Sources */,
 				100000000000000000000002 /* RootTabView.swift in Sources */,
 				100000000000000000000003 /* SplitVpnAppState.swift in Sources */,
 				100000000000000000000004 /* SubscriptionService.swift in Sources */,
@@ -392,6 +449,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                3552DECA9EF07E6C83BD29A6,
+                43E55DC541256B6E96D9C361,
+                4BE2EA4D97385156A8E60896,
+                7471C4E45D0EB333C3BDF515,
+                00621F8A60ECCD64C01B5F2A,
 				10000000000000000000000D /* PacketTunnelProvider.swift in Sources */,
 				10000000000000000000000E /* TunnelDataPlane.swift in Sources */,
 				10000000000000000000001C /* LibboxPacketTunnelCore.swift in Sources */,
@@ -474,13 +536,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/SplitVpnIphone.entitlements;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = "$(SPLITVPN_DEVELOPMENT_TEAM)";
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 0.6.10;
+				MARKETING_VERSION = 0.6.24;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "split-vpn";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -497,13 +559,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = App/SplitVpnIphone.entitlements;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = "$(SPLITVPN_DEVELOPMENT_TEAM)";
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = App/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 0.6.10;
+				MARKETING_VERSION = 0.6.24;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "split-vpn";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -520,13 +582,13 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/SplitVpnPacketTunnel.entitlements;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = "$(SPLITVPN_DEVELOPMENT_TEAM)";
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PacketTunnel/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
-				MARKETING_VERSION = 0.6.10;
+				MARKETING_VERSION = 0.6.24;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_PACKET_TUNNEL_BUNDLE_ID)";
 				PRODUCT_NAME = SplitVpnPacketTunnel;
 				SKIP_INSTALL = YES;
@@ -543,13 +605,13 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = PacketTunnel/SplitVpnPacketTunnel.entitlements;
-				CURRENT_PROJECT_VERSION = 9;
+				CURRENT_PROJECT_VERSION = 12;
 				DEVELOPMENT_TEAM = "$(SPLITVPN_DEVELOPMENT_TEAM)";
 				ENABLE_DEBUG_DYLIB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = PacketTunnel/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
-				MARKETING_VERSION = 0.6.10;
+				MARKETING_VERSION = 0.6.24;
 				PRODUCT_BUNDLE_IDENTIFIER = "$(SPLITVPN_PACKET_TUNNEL_BUNDLE_ID)";
 				PRODUCT_NAME = SplitVpnPacketTunnel;
 				SKIP_INSTALL = YES;

@@ -75,12 +75,16 @@ def main():
     elif args.platform == 'android-arm64':
         run([sys.executable, ROOT / 'apps/android/scripts/prepare-dependencies.py'], cwd=ROOT)
         run(['bash', ROOT / 'apps/android/scripts/build-core.sh'], cwd=ROOT)
+        run([sys.executable, ROOT / 'packages/company-vpn/build_mobile.py', 'android'], cwd=ROOT)
+        outputs.append(ROOT / 'packages/company-vpn/.local/mobile/CompanyCore.aar')
         outputs += [ROOT / 'apps/android/app/src/main/jniLibs/arm64-v8a' / name
                     for name in ['libmihomo.so', 'libtun2socks.so']]
         outputs.append(ROOT / 'apps/android/app/src/main/cpp/prebuilt/arm64-v8a/libsplitvpn_core.a')
     elif args.platform == 'ios':
         run(['bash', ROOT / 'apps/iphone/Scripts/build-core-xcframework.sh'], cwd=ROOT)
-        run(['bash', ROOT / 'apps/iphone/Scripts/build-sing-box-libbox.sh'], cwd=ROOT)
+        run(['bash', ROOT / 'apps/iphone/Scripts/build-sing-box-libbox.sh', '--source-only'], cwd=ROOT)
+        run([sys.executable, ROOT / 'packages/company-vpn/build_mobile.py', 'ios'], cwd=ROOT)
+        outputs += [path for path in (ROOT / 'packages/company-vpn/.local/mobile/Libbox.xcframework').rglob('*') if path.is_file()]
         outputs += [path for base in ['CoreFrameworks', 'SingBoxFrameworks']
                     for path in (ROOT / 'apps/iphone/ThirdParty' / base).rglob('*') if path.is_file()]
     if args.platform:

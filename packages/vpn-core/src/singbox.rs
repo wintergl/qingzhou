@@ -16,7 +16,17 @@ pub const TUN_ADDRESS6: &str = "fdfe:dcba:9876::1/126";
 pub const DEFAULT_MTU: u64 = 1400;
 const MTUS: [u64; 3] = [1280, 1400, 1500];
 const RESOLVERS: [&str; 2] = ["cloudflare-direct", "ali"];
-const RESERVED_TAGS: [&str; 3] = ["proxy", "direct", "block"];
+const RESERVED_TAGS: [&str; 9] = [
+    "__QZ_MOBILE_AUTO__",
+    "__QZ_MOBILE_BALANCE__",
+    "proxy",
+    "direct",
+    "block",
+    crate::static_exit::EXIT,
+    config::PROBE,
+    crate::static_exit::SCAN_FRONT,
+    crate::static_exit::SCAN_EXIT,
+];
 const RESERVED_CIDRS: [&str; 5] = [
     "0.0.0.0/8",
     "127.0.0.0/8",
@@ -91,12 +101,18 @@ pub struct Options {
     pub mtu: u64,
     pub domain_resolver: String,
     pub geo: Option<Geo>,
+    pub exit_credential: Value,
+    pub company_tunnel: Value,
+    pub(crate) ports: crate::mobile::profile::Ports,
 }
 impl Options {
     pub fn from_payload(p: &Value) -> Self {
         let geo = &p["geo"];
         let path = |k: &str| geo[k].as_str().filter(|s| !s.is_empty()).map(str::to_owned);
         Self {
+            exit_credential: p["exitCredential"].clone(),
+            company_tunnel: p["companyTunnel"].clone(),
+            ports: crate::mobile::profile::Ports::from_payload(p),
             mtu: p["mtu"]
                 .as_u64()
                 .filter(|m| MTUS.contains(m))
@@ -554,7 +570,11 @@ fn resolve(
         .filter(|_| outlet["name"] == label);
     let hit = key
         .and_then(|k| converted.iter().find(|c| c.identity == k))
-        .or_else(|| converted.iter().find(|c| c.name == label));
+        .or_else(|| {
+            key.is_none()
+                .then(|| converted.iter().find(|c| c.name == label))
+                .flatten()
+        });
     if let Some(c) = hit {
         return (
             c.tag.clone(),
@@ -576,8 +596,79 @@ fn resolve(
     }
 }
 
-/// Matchers from shared settings. `GEOSITE` rules are counted
-/// as skipped because mobile only stages the CN rule sets.
+/// Private measurement listeners never alter the business selector.
+fn add_mobile_probes(
+    store: &Storage,
+    c: &mut Value,
+    settings: &Value,
+    opts: &Options,
+    nodes: &[Converted],
+) -> Result<()> {
+    let ports = &opts.ports;
+    let members: Vec<_> = if nodes.is_empty() {
+        vec!["direct".to_owned()]
+    } else {
+        nodes.iter().map(|node| node.tag.clone()).collect()
+    };
+    let mut declarations = vec![
+        ("mobile-mixed", ports.mixed, None),
+        (
+            "mobile-current",
+            ports.current,
+            Some(if settings["staticExit"]["enabled"] == true {
+                crate::static_exit::EXIT
+            } else {
+                "proxy"
+            }),
+        ),
+        (config::PROBE_LISTENER, ports.probe, Some(config::PROBE)),
+    ];
+    c["outbounds"].as_array_mut().unwrap().push(json!({"type":"selector","tag":config::PROBE,"outbounds":members,"default":members[0],"interrupt_exist_connections":true}));
+    if !nodes.is_empty()
+        && !settings["staticExit"]["server"]
+            .as_str()
+            .unwrap_or("")
+            .is_empty()
+        && !opts.exit_credential.is_null()
+    {
+        let mut temporary = c.clone();
+        let mut s = settings.clone();
+        s["staticExit"]["enabled"] = json!(true);
+        s["selectedProxy"] = json!(&nodes[0].name);
+        temporary["outbounds"][0]["default"] = json!(members[0]);
+        if crate::static_exit::apply_singbox(&mut temporary, &s, &opts.exit_credential).is_ok() {
+            let mut exit = temporary["outbounds"]
+                .as_array()
+                .unwrap()
+                .last()
+                .unwrap()
+                .clone();
+            exit["tag"] = json!(crate::static_exit::SCAN_EXIT);
+            exit["detour"] = json!(crate::static_exit::SCAN_FRONT);
+            c["outbounds"].as_array_mut().unwrap().extend([json!({"type":"selector","tag":crate::static_exit::SCAN_FRONT,"outbounds":members,"default":members[0],"interrupt_exist_connections":true}),exit]);
+            declarations.push((
+                crate::static_exit::SCAN_LISTENER,
+                ports.scan,
+                Some(crate::static_exit::SCAN_EXIT),
+            ));
+        }
+    }
+    for (name, port, outbound) in declarations {
+        c["inbounds"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"type":"mixed","tag":name,"listen":"127.0.0.1","listen_port":port}));
+        if let Some(outbound) = outbound {
+            c["route"]["rules"]
+                .as_array_mut()
+                .unwrap()
+                .insert(0, json!({"inbound":[name],"outbound":outbound}));
+        }
+    }
+    c["experimental"]["clash_api"] = json!({"external_controller":format!("127.0.0.1:{}",ports.controller),"secret":store.controller_secret()?});
+    Ok(())
+}
+
 fn matchers(settings: &Value, list: &str) -> (Map<String, Value>, usize) {
     let mut m = Map::new();
     let mut skipped = 0;
@@ -654,6 +745,7 @@ pub fn direct_cidrs(settings: &Value) -> Vec<&'static str> {
 /// Builds the sing-box document from committed subscriptions and settings.
 /// Returns `{config, summary}`; `config` is the JSON text to stage.
 pub fn generate(store: &Storage, settings: &Value, opts: &Options) -> Result<Value> {
+    opts.ports.validate()?;
     let mut used: HashSet<String> = RESERVED_TAGS.iter().map(|s| s.to_string()).collect();
     let mut all = Vec::new();
     let mut converted = Vec::new();
@@ -675,7 +767,7 @@ pub fn generate(store: &Storage, settings: &Value, opts: &Options) -> Result<Val
             });
         }
     }
-    let (selected, status, message) = resolve(settings, &all, &converted);
+    let (mut selected, mut status, mut message) = resolve(settings, &all, &converted);
     let quic = converted.iter().any(|c| c.tag == selected && !c.udp);
     let fallback = config::geo_fallback(settings);
     ensure!(
@@ -756,6 +848,18 @@ pub fn generate(store: &Storage, settings: &Value, opts: &Options) -> Result<Val
         ));
     }
 
+    let automatic = settings["selectedProxy"] == "AUTO" && !converted.is_empty();
+    if automatic {
+        selected = "__QZ_MOBILE_AUTO__".into();
+        status = "automatic-urltest";
+        message = "按延迟自动选择可用节点，间隔 10 分钟，闲置时暂停。".into();
+    }
+    let balanced = settings["selectedProxy"] == "BALANCE" && !converted.is_empty();
+    if balanced {
+        selected = "__QZ_MOBILE_BALANCE__".into();
+        status = "destination-load-balance";
+        message = "按目标稳定分配节点；建连失败时切换其他可用节点。".into();
+    }
     let mut selector: Vec<String> = converted.iter().map(|c| c.tag.clone()).collect();
     selector.push("direct".into());
     if !selector.contains(&selected) {
@@ -767,6 +871,12 @@ pub fn generate(store: &Storage, settings: &Value, opts: &Options) -> Result<Val
         json!({"type":"block","tag":"block"}),
     ];
     outbounds.extend(node_outbounds);
+    if automatic {
+        outbounds.push(json!({"type":"urltest","tag":"__QZ_MOBILE_AUTO__","outbounds":converted.iter().map(|c|c.tag.clone()).collect::<Vec<_>>(),"url":"https://www.gstatic.com/generate_204","interval":"10m","idle_timeout":"15m","tolerance":50,"interrupt_exist_connections":true}));
+    }
+    if balanced {
+        outbounds.push(json!({"type":"qz-load-balance","tag":"__QZ_MOBILE_BALANCE__","outbounds":converted.iter().map(|c|c.tag.clone()).collect::<Vec<_>>() }));
+    }
     let mut route = json!({
         "auto_detect_interface":true,
         "default_domain_resolver":opts.domain_resolver,
@@ -776,7 +886,7 @@ pub fn generate(store: &Storage, settings: &Value, opts: &Options) -> Result<Val
     if !rule_sets.is_empty() {
         route["rule_set"] = json!(rule_sets);
     }
-    let config = json!({
+    let mut config = json!({
         "log":{"level":"warn","timestamp":true},
         "dns":{
             "servers":[
@@ -795,6 +905,21 @@ pub fn generate(store: &Storage, settings: &Value, opts: &Options) -> Result<Val
         "route":route,
         "experimental":{"cache_file":{"enabled":true,"store_fakeip":true}},
     });
+    crate::static_exit::apply_singbox(&mut config, settings, &opts.exit_credential)?;
+    add_mobile_probes(store, &mut config, settings, opts, &converted)?;
+    crate::mobile::company::apply_singbox(store, &mut config, &opts.company_tunnel)?;
+    let runtime_revision = crate::mobile::profile::persist(
+        store,
+        "singbox",
+        &config,
+        settings,
+        &opts.ports,
+        converted
+            .iter()
+            .map(|node| (node.identity.clone(), node.tag.clone()))
+            .collect(),
+        json!(selected),
+    )?;
     Ok(json!({
         "config":serde_json::to_string_pretty(&config)?,
         "summary":{
@@ -811,6 +936,8 @@ pub fn generate(store: &Storage, settings: &Value, opts: &Options) -> Result<Val
             "directCidrs":cidrs,
             "geoRuleSets":opts.geo.is_some(),
             "geoFallback":fallback,
+            "viaStaticExit":settings["staticExit"]["enabled"] == true,
+            "runtimeRevision":runtime_revision,
         },
     }))
 }

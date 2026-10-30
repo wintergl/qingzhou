@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct RulesScreen: View {
+struct TunnelSettingsScreen: View {
     @EnvironmentObject private var appState: SplitVpnAppState
     @State private var domainText = ""
     @State private var routeProbeText = "www.baidu.com"

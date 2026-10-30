@@ -21,7 +21,7 @@ public static class Ui
             TextTrimming = wrap ? TextTrimming.None : TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center,
         };
-        block.SetResourceReference(TextBlock.ForegroundProperty, secondary ? "TextFillColorSecondaryBrush" : "TextFillColorPrimaryBrush");
+        block.SetResourceReference(TextBlock.ForegroundProperty, secondary ? "BrandSecondary" : "BrandText");
         return block;
     }
 
@@ -45,8 +45,8 @@ public static class Ui
 
     public static Button Button(string text, Action click, bool accent = false)
     {
-        var button = new Button { Content = text, Padding = new Thickness(14, 6, 14, 6), MinHeight = 32 };
-        if (accent) button.SetResourceReference(FrameworkElement.StyleProperty, "AccentButtonStyle");
+        var button = new Button { Content = text, Padding = new Thickness(15, 7, 15, 7), MinHeight = 36 };
+        button.SetResourceReference(FrameworkElement.StyleProperty, accent ? "QingzhouPrimaryButtonStyle" : "QingzhouButtonStyle");
         button.Click += (_, _) => click();
         return button;
     }
@@ -88,15 +88,15 @@ public static class Ui
 
     public static Border Card(UIElement child, double padding = 16)
     {
-        var border = new Border { Child = child, Padding = new Thickness(padding), CornerRadius = new CornerRadius(8), BorderThickness = new Thickness(1) };
-        border.SetResourceReference(Border.BackgroundProperty, "CardBackgroundFillColorDefaultBrush");
-        border.SetResourceReference(Border.BorderBrushProperty, "CardStrokeColorDefaultBrush");
+        var border = new Border { Child = child, Padding = new Thickness(padding), CornerRadius = new CornerRadius(16), BorderThickness = new Thickness(1) };
+        border.SetResourceReference(Border.BackgroundProperty, "BrandSurface");
+        border.SetResourceReference(Border.BorderBrushProperty, "BrandBorder");
         return border;
     }
 
     public static StackPanel Header(string title, string subtitle, out TextBlock titleBlock, out TextBlock subtitleBlock)
     {
-        titleBlock = Text(title, 28, bold: true);
+        titleBlock = Text(title, 30, bold: true);
         subtitleBlock = Text(subtitle, 14, secondary: true, wrap: true);
         subtitleBlock.Margin = new Thickness(0, 6, 0, 0);
         var panel = new StackPanel();

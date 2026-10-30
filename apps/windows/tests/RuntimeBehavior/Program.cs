@@ -9,6 +9,9 @@ static async Task Run()
 {
     var tests = new (string, Func<Task>)[]
     {
+        ("ISP 保存失败恢复安全存储", ChainCredentialRollback),
+        ("ISP 迟到快照不能覆盖新排序", ChainLateSnapshot),
+        ("ISP 取消确认前保留连接中状态", ChainCancelPending),
         ("窗口、息屏、休眠和省电刷新策略", Policy),
         ("过滤 TUN 和自分配地址，保留虚拟机出口", NetworkFilter),
         ("物理地址、网关和网卡变化识别", NetworkIdentity),
@@ -41,6 +44,10 @@ static async Task Run()
         ("内核仍运行但出口失败时不显示正常连接", DegradedPath),
         ("断开后迟到的旧快照不能恢复已连接状态", StopDuringSnapshot),
         ("自动检测结果带时间更新且不占用全局操作状态", AutomaticDiagnostics),
+        ("节点增量更新拒绝迟到快照并保留读取错误", LiveNodeUpdates),
+        ("当前出口风险独立于节点历史且不会被旧快照覆盖", CurrentExitRisk),
+        ("节点读取失败不影响单独确认连接和断开", PartialSnapshotFailure),
+        ("等待连接时状态未知仍可取消", UnknownDuringConnect),
     };
     foreach (var (name, test) in tests)
     {
@@ -53,6 +60,117 @@ static async Task Run()
 static void Check(bool condition, string message)
 {
     if (!condition) throw new Exception(message);
+}
+
+static async Task ChainCredentialRollback()
+{
+    using var f = new Fixture(true, true); await f.Store.Start(f.Monitor);
+    JsonObject? credential = new() { ["configuration"] = new JsonObject { ["server"] = "old.example.test" }, ["password"] = "old-secret" };
+    var before=credential.DeepClone();
+    f.Store.ReadExitCredential=()=>credential?.DeepClone() as JsonObject;
+    f.Store.WriteExitCredential=value=>credential=value?.DeepClone() as JsonObject;
+    f.Core.Handlers["static-exit:configure"]=_=>Task.FromException<JsonNode?>(new Exception("fixture-save-failure"));
+    var error=await f.Store.SaveStaticExit(new JsonObject { ["enabled"]=true,["protocol"]="socks5",["server"]="new.example.test",["port"]=1080,["username"]="fixture" },"new-secret");
+    Check(error is not null && JsonNode.DeepEquals(before,credential),"失败后未恢复原凭据");
+    Check(f.Store.Busy is null,"保存错误后仍处于忙碌状态");
+}
+static async Task ChainLateSnapshot()
+{
+    using var f = new Fixture(true,true);await f.Store.Start(f.Monitor);
+    var old=f.Core.Hold("chain-scan:get");var refresh=f.Store.RefreshChain("latency");
+    f.Core.Handlers["chain-scan:get"]=_=>Task.FromResult<JsonNode?>(new JsonObject{["id"]="new"});
+    await f.Store.RefreshChain("download");old.SetResult(new JsonObject{["id"]="old"});await refresh;
+    Check(f.Store.ChainScan.At("id").Str()=="new","迟到读取覆盖当前结果");
+}
+static async Task ChainCancelPending()
+{
+    using var f = new Fixture(true,true);await f.Store.Start(f.Monitor);
+    var pending=f.Core.Hold("chain-scan:use");
+    var use=f.Store.UseChainRoute(new JsonObject{["identityKey"]="fixture",["nodeName"]="node"},"scan","balanced");
+    await Until(()=>f.Core.Count("chain-scan:use")==1);
+    var id=f.Core.Calls.Last(c=>c.Channel=="chain-scan:use").Payload.At("operationId").Str();
+    f.Core.Handlers["chain-scan:cancel-use"]=_=>Task.FromResult<JsonNode?>(new JsonObject{["operationId"]=id,["cancelRequested"]=true,["phase"]="restoring"});
+    await f.Store.CancelChainUse();
+    Check(f.Store.ChainUseActive&&f.Store.Busy is not null,"取消请求被误当作操作完成");
+    f.Core.Emit("chain-scan:use-status",new JsonObject{["operationId"]="other",["finished"]=true});
+    Check(f.Store.ChainUseActive,"其他操作结果清除了当前操作");
+    pending.SetResult(new JsonObject{["operationId"]=id,["identityKey"]="fixture",["connected"]=true,["exitIp"]="203.0.113.8"});
+    await use;Check(!f.Store.ChainUseActive,"确认结果未结束当前操作");
+}
+
+static async Task LiveNodeUpdates()
+{
+    using var f = new Fixture(true, true);
+    await f.Store.Start(f.Monitor);
+    var pending = f.Core.Hold("native:bootstrap");
+    var refresh = f.Store.Refresh();
+    await Until(() => f.Core.Count("native:bootstrap") >= 2);
+    f.Core.Emit("nodes:updated", JsonNode.Parse("""
+        {"viewRevision":20,"nodes":[{"name":"fresh-fixture","identityKey":"fresh","available":true,"delay":33}],"groups":[],"error":null}
+        """));
+    await Until(() => f.Store.Nodes.FirstOrDefault().At("name").Str() == "fresh-fixture");
+    pending.SetResult(JsonNode.Parse("""
+        {"viewRevision":10,"status":{"mihomo":{"state":"running"},"settings":{"selectedProxy":"DIRECT"}},"nodes":[{"name":"obsolete"}],"previewOnly":false}
+        """));
+    await refresh;
+    Check(f.Store.Nodes.First().At("name").Str() == "fresh-fixture", "old snapshot overwrote live node update");
+    f.Core.Emit("nodes:updated", JsonNode.Parse("""{"viewRevision":21,"error":"Fixture provider cannot be read"}"""));
+    await Until(() => f.Store.NodesError is not null);
+    Check(f.Store.Nodes.Count == 0, "unreadable nodes remained selectable");
+    Check(!f.Store.StatusKnown, "read failure still presented cached status as current");
+    f.Core.Emit("nodes:updated", JsonNode.Parse("""{"viewRevision":19,"nodes":[{"name":"obsolete"}]}"""));
+    await Task.Delay(10);
+    Check(f.Store.Nodes.Count == 0, "older event cleared newer read failure");
+}
+
+static async Task CurrentExitRisk()
+{
+    using var f = new Fixture(true, true);
+    await f.Store.Start(f.Monitor);
+    var pending = f.Core.Hold("native:bootstrap");
+    var refresh = f.Store.Refresh();
+    f.Core.Emit("risk:current-updated", JsonNode.Parse("""
+        {"viewRevision":20,"result":{"scope":"current-exit","ip":"203.0.113.8","riskLevel":"low"}}
+        """));
+    await Until(() => f.Store.CurrentRisk.At("ip").Str() == "203.0.113.8");
+    pending.SetResult(JsonNode.Parse("""
+        {"viewRevision":10,"status":{"mihomo":{"state":"running"},"settings":{"selectedProxy":"fixture-node"}},"risks":[{"nodeName":"fixture-node","ip":"203.0.113.9","riskLevel":"low"}],"previewOnly":false}
+        """));
+    await refresh;
+    Check(f.Store.CurrentRisk.At("ip").Str() == "203.0.113.8", "old bootstrap erased current exit risk");
+    f.Core.Emit("risk:current-updated", JsonNode.Parse("""{"viewRevision":21,"result":null}"""));
+    await Until(() => f.Store.CurrentRisk is null);
+    Check(f.Store.Risks.Count == 1, "historical node risks were lost");
+    Check(f.Store.CurrentRisk is null, "node history was substituted for current exit risk");
+}
+
+static async Task PartialSnapshotFailure()
+{
+    using var f = new Fixture(true, true);
+    await f.Store.Start(f.Monitor);
+    f.Core.Handlers["native:bootstrap"] = _ => Task.FromException<JsonNode?>(new CoreException("Fixture provider cannot be read"));
+    f.Core.Handlers["vpn:get-status"] = _ => Task.FromResult<JsonNode?>(JsonNode.Parse("""
+        {"mihomo":{"state":"running","networkRecovery":{"state":"ready"},"viewRevision":10},"settings":{"selectedProxy":"DIRECT"}}
+        """));
+    await f.Store.Refresh(showError:false);
+    Check(f.Store.StatusKnown && f.Store.CanDisconnect, "independent connection state could not be used");
+}
+
+static async Task UnknownDuringConnect()
+{
+    using var f = new Fixture(false,true);
+    await f.Store.Start(f.Monitor);
+    var pending = f.Core.Hold("vpn:start");
+    f.Store.ConnectOrDisconnect();
+    await Until(() => f.Core.Count("vpn:start") == 1);
+    f.Core.Handlers["native:bootstrap"] = _ => Task.FromException<JsonNode?>(new CoreException("Fixture snapshot expired"));
+    await f.Store.Refresh(showError:false);
+    Check(!f.Store.StatusKnown && f.Store.CanDisconnect, "unknown snapshot disabled connection cancellation");
+    f.Store.ConnectOrDisconnect();
+    await Until(() => f.Core.Count("vpn:stop") == 1);
+    pending.SetResult(new JsonObject());
+    await Task.Delay(10);
+    Check(!f.Store.Running, "cancelled connection was restored by late result");
 }
 
 static Task Policy()

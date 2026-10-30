@@ -88,7 +88,7 @@ final class StartupConnectionTests: XCTestCase {
         defer { store.close() }
         store.startOnce()
         await waitUntil { store.error != nil }
-        XCTAssertEqual(fixture.channels, ["native:bootstrap"])
+        XCTAssertEqual(fixture.channels, ["native:bootstrap", "vpn:get-status"])
         XCTAssertEqual(fixture.startupCalls, 0)
         XCTAssertNil(store.status)
     }

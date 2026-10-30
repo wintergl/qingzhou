@@ -74,6 +74,13 @@ impl Diagnostics {
     }
     pub fn environment(&mut self, paused: Option<&'static str>, low_power: bool, now: Instant) {
         let changed_power = self.low_power != low_power;
+        if self.paused != paused
+            && matches!(paused, Some("disconnected" | "recovering" | "sleeping"))
+        {
+            // A live process can keep its PID/config across a path change.
+            // Its previous results must still be historical and in-flight runs obsolete.
+            self.invalidate();
+        }
         self.paused = paused;
         self.low_power = low_power;
         if paused.is_some() {
@@ -81,9 +88,13 @@ impl Diagnostics {
         }
         for kind in [CheckKind::Connectivity, CheckKind::Websites] {
             let record = &mut self.records[index(kind)];
+            if record.run.is_some() {
+                continue;
+            }
             if record.next.is_none() || changed_power {
                 let delay = if record.checked_at.is_none() || record.stale {
-                    Duration::from_secs(15)
+                    // The runtime already waits for the connection to be ready.
+                    Duration::ZERO
                 } else {
                     kind.interval(low_power)
                 };
@@ -113,6 +124,8 @@ impl Diagnostics {
         }
         self.sequence = self.sequence.wrapping_add(1);
         record.run = Some(self.sequence);
+        record.next = None;
+        record.next_at = None;
         record.started_at = Some(wall_after(Duration::ZERO));
         record.source = Some(if manual { "manual" } else { "automatic" });
         record.error = None;
@@ -164,7 +177,8 @@ impl Diagnostics {
             };
             value[kind.key()] = json!({"state":state,"checkedAt":record.checked_at,"startedAt":record.started_at,
                 "nextCheckAt":if self.paused.is_none() { record.next_at.as_ref() } else { None },
-                "source":record.source,"result":record.result,"error":record.error,"intervalSeconds":kind.interval(self.low_power).as_secs()});
+                "source":record.source,"result":record.result,"staleResult":record.stale,
+                "error":record.error,"intervalSeconds":kind.interval(self.low_power).as_secs()});
         }
         value
     }
@@ -188,24 +202,74 @@ pub fn failure_kind(error: &anyhow::Error) -> &'static str {
 mod tests {
     use super::*;
     #[test]
-    fn schedule_waits_for_stability_then_runs_two_checks_without_overlap() {
+    fn readiness_starts_both_checks_once_without_waiting_for_the_other_result() {
         let now = Instant::now();
         let mut checks = Diagnostics::default();
         assert!(checks.due(now + Duration::from_secs(600)).is_none());
         checks.environment(None, false, now);
-        assert!(checks.due(now + Duration::from_secs(14)).is_none());
-        assert_eq!(
-            checks.due(now + Duration::from_secs(15)),
-            Some(CheckKind::Connectivity)
-        );
+        assert_eq!(checks.due(now), Some(CheckKind::Connectivity));
         let id = checks.claim(CheckKind::Connectivity, false).unwrap();
         assert!(checks.claim(CheckKind::Connectivity, true).is_err());
+        assert_eq!(checks.due(now), Some(CheckKind::Websites));
+        let sites = checks.claim(CheckKind::Websites, false).unwrap();
+        assert!(checks.claim(CheckKind::Websites, true).is_err());
+        checks.environment(None, false, now + Duration::from_secs(5));
+        assert!(checks.due(now + Duration::from_secs(20)).is_none());
+        checks.finish(CheckKind::Websites, sites, Ok(json!({"results":[]})), now);
         checks.finish(CheckKind::Connectivity, id, Ok(json!({"ok":true})), now);
+        assert!(checks.due(now + Duration::from_secs(299)).is_none());
         assert_eq!(
-            checks.due(now + Duration::from_secs(15)),
-            Some(CheckKind::Websites)
+            checks.due(now + Duration::from_secs(300)),
+            Some(CheckKind::Connectivity)
         );
         assert!(checks.status()["connectivity"]["checkedAt"].is_string());
+    }
+
+    #[test]
+    fn recovery_without_a_process_change_rechecks_history_and_rejects_in_flight_results() {
+        let now = Instant::now();
+        let mut checks = Diagnostics::default();
+        checks.environment(None, false, now);
+        let old = checks.claim(CheckKind::Connectivity, false).unwrap();
+        checks.finish(CheckKind::Connectivity, old, Ok(json!({"old":true})), now);
+        let pending = checks.claim(CheckKind::Websites, false).unwrap();
+        checks.environment(Some("recovering"), false, now);
+        assert_eq!(checks.status()["connectivity"]["staleResult"], true);
+        assert!(checks.due(now + Duration::from_secs(900)).is_none());
+        assert!(!checks.finish(CheckKind::Websites, pending, Ok(json!({"late":true})), now));
+        checks.environment(None, false, now);
+        assert_eq!(checks.due(now), Some(CheckKind::Connectivity));
+        let fresh = checks.claim(CheckKind::Connectivity, false).unwrap();
+        assert_eq!(checks.status()["connectivity"]["state"], "running");
+        assert_eq!(checks.status()["connectivity"]["staleResult"], true);
+        assert_eq!(checks.status()["connectivity"]["result"]["old"], true);
+        checks.finish(
+            CheckKind::Connectivity,
+            fresh,
+            Ok(json!({"fresh":true})),
+            now,
+        );
+        assert_eq!(checks.status()["connectivity"]["staleResult"], false);
+        assert_eq!(checks.status()["connectivity"]["result"]["fresh"], true);
+    }
+
+    #[test]
+    fn low_power_still_checks_on_connect_but_uses_longer_repeat_intervals() {
+        let now = Instant::now();
+        let mut checks = Diagnostics::default();
+        checks.environment(None, true, now);
+        assert_eq!(checks.due(now), Some(CheckKind::Connectivity));
+        for kind in [CheckKind::Connectivity, CheckKind::Websites] {
+            let id = checks.claim(kind, false).unwrap();
+            checks.finish(kind, id, Err("fixture timeout".into()), now);
+        }
+        assert_eq!(checks.status()["websites"]["state"], "error");
+        assert!(checks.due(now + Duration::from_secs(899)).is_none());
+        assert_eq!(
+            checks.due(now + Duration::from_secs(900)),
+            Some(CheckKind::Connectivity)
+        );
+        assert_eq!(checks.status()["websites"]["intervalSeconds"], 1800);
     }
     #[test]
     fn power_sleep_and_connection_changes_preserve_history_but_reject_old_results() {

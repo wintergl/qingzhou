@@ -9,6 +9,7 @@
   "lanDirect": true,
   "tailscaleDirect": true,
   "specialCompatibilityRules": {
+    "mailMasterDirect": true,
     "mailMasterProxy8081": true,
     "wechatImageSendFallback": true
   },
@@ -66,5 +67,7 @@
   ],
   "directDomainRules": [],
   "favoriteNodeNames": [],
+  "chainAutoRefresh": {"enabled": false, "intervalMinutes": 30, "paused": false},
+  "staticExit": {"enabled": false, "protocol": "socks5", "server": "", "port": 0, "username": "", "expectedIp": ""},
   "nodeGroups": []
 }

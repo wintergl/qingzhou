@@ -25,7 +25,8 @@ def main():
     run([sys.executable, ROOT / 'scripts/check_public_source.py'], cwd=ROOT)
     lock = load_lock()
     if args.platform == 'ios':
-        sources = {'sing_box': ROOT / 'apps/iphone/ThirdParty/sing-box-src'}
+        sources = {'sing_box': ROOT / 'packages/company-vpn/.local/mobile/libbox-source',
+                   'zju_connect': ROOT / 'packages/company-vpn/.local/mobile/company-source'}
     elif args.platform == 'android-arm64':
         sources = {key: ROOT / '.local/android-dependencies' / ('source-' + name + '-' + lock['dependencies'][key]['commit'])
                    for key, name in [('mihomo_android', 'mihomo'), ('tun2socks', 'tun2socks')]}
@@ -42,6 +43,8 @@ def main():
     else:
         sources = {'mihomo': LOCAL / 'sources' / ('mihomo-' + lock['dependencies']['mihomo']['commit']),
                    'zju_connect': ROOT / 'packages/company-vpn/.local/source'}
+    if args.platform == 'android-arm64':
+        sources['zju_connect'] = ROOT / 'packages/company-vpn/.local/mobile/company-source'
     for source in sources.values():
         if not (source / 'go.mod').is_file():
             raise SystemExit('Prepare platform dependencies before exporting source.')
@@ -64,6 +67,14 @@ def main():
                 '.git', '.local', '*.xcframework', '*.framework', '.qingzhou-source.json'))
             components[key] = {field: lock['dependencies'][key][field]
                                for field in ['repository', 'commit', 'license']}
+        if args.platform == 'ios':
+            module = stage / 'upstream/sing_box/go.mod'
+            module.write_text(module.read_text().replace('=> ../company-source', '=> ../zju_connect'))
+        if args.platform in {'ios', 'android-arm64'}:
+            tools = ROOT / 'packages/company-vpn/.local/mobile/gomobile-tools'
+            shutil.copytree(tools, stage / 'build-tools/gomobile', ignore=shutil.ignore_patterns('.git'))
+            manifest = ROOT / 'packages/company-vpn/.local/mobile' / ('ios-source-manifest.json' if args.platform == 'ios' else 'android-source-manifest.json')
+            shutil.copyfile(manifest, stage / 'MOBILE-SOURCE-MANIFEST.json')
         (stage / 'SOURCE-MANIFEST.json').write_text(json.dumps({
             'platform': args.platform, 'components': components,
             'dependency_lock_sha256': sha256(ROOT / 'third_party/dependencies.lock.json'),

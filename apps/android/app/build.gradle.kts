@@ -12,8 +12,8 @@ android {
         applicationId = "dev.splitvpn.android"
         minSdk = 26
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.6.10"
+        versionCode = 20
+        versionName = "0.6.24"
 
         // libmihomo.so, libtun2socks.so and the Rust core ship for arm64 only.
         ndk {
@@ -49,6 +49,7 @@ android {
 }
 
 dependencies {
+    implementation(files("../../../packages/company-vpn/.local/mobile/CompanyCore.aar"))
     testImplementation("junit:junit:4.13.2")
 }
 

@@ -85,13 +85,13 @@ final class SplitVpnVPNManager {
             return nil
         }
         let data = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data?, Error>) in
-            do {
-                try session.sendProviderMessage(Data("runtime-status".utf8)) { responseData in
-                    continuation.resume(returning: responseData)
-                }
-            } catch {
-                continuation.resume(throwing: error)
+            let completion = ProviderReply<Result<Data?, Error>> { continuation.resume(with: $0) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                completion.finish(.failure(CoreError(code: "STATUS_TIMEOUT", message: "隧道状态读取超时，请检查连接")))
             }
+            do {
+                try session.sendProviderMessage(Data("runtime-status".utf8)) { responseData in completion.finish(.success(responseData)) }
+            } catch { completion.finish(.failure(error)) }
         }
         guard let data else {
             return nil
@@ -99,6 +99,26 @@ final class SplitVpnVPNManager {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         return try decoder.decode(RuntimeStatus.self, from: data)
+    }
+
+    func companyMessage(_ message: [String: Any]) async throws -> [String: Any] {
+        let manager = try await loadOrCreateManager()
+        guard let session = manager.connection as? NETunnelProviderSession else { throw CoreError(code: "NO_TUNNEL", message: "请先连接共享 VPN 隧道") }
+        let request = try JSONSerialization.data(withJSONObject: message)
+        let data: Data? = try await withCheckedThrowingContinuation { continuation in
+            let completion = ProviderReply<Result<Data?, Error>> { continuation.resume(with: $0) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 8) { completion.finish(.failure(CoreError(code: "COMPANY_TIMEOUT", message: "接入控制消息超时，请检查连接"))) }
+            do { try session.sendProviderMessage(request) { completion.finish(.success($0)) } } catch { completion.finish(.failure(error)) }
+        }
+        guard let data, let response = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw CoreError(code: "COMPANY_BAD_REPLY", message: "接入控制结果无效") }
+        guard response["ok"] as? Bool == true else { throw CoreError(code: "COMPANY_FAILED", message: response["error"] as? String ?? "接入操作失败") }
+        return response
+    }
+
+    func reloadConfiguration() async throws {
+        let manager = try await loadOrCreateManager()
+        guard let session = manager.connection as? NETunnelProviderSession else { return }
+        try session.sendProviderMessage(Data("reload-config".utf8)) { _ in }
     }
 
     private func loadOrCreateManager() async throws -> NETunnelProviderManager {
@@ -226,5 +246,17 @@ final class SplitVpnVPNManager {
         @unknown default:
             return false
         }
+    }
+}
+
+
+/// NEProvider callbacks may arrive after the deadline. Resume the waiter once.
+private final class ProviderReply<Value>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completion: ((Value) -> Void)?
+    init(_ completion: @escaping (Value) -> Void) { self.completion = completion }
+    func finish(_ value: Value) {
+        lock.lock(); let callback = completion; completion = nil; lock.unlock()
+        callback?(value)
     }
 }

@@ -2,9 +2,11 @@ package dev.splitvpn.android.core
 
 import android.content.Context
 import org.json.JSONArray
+import org.json.JSONObject
 
 class SettingsRepository(context: Context) {
     private val preferences = context.getSharedPreferences("split_vpn_settings", Context.MODE_PRIVATE)
+    private val vault = SecureVault(context)
 
     init {
         if (!preferences.contains(KEY_RULES)) setVpnDomainRules(DefaultRules.openAiChatGptVpnRules)
@@ -35,10 +37,26 @@ class SettingsRepository(context: Context) {
         preferences.edit().putBoolean(KEY_BLOCK_HIGH_RISK, value).apply()
     }
 
-    fun getIpdataApiKey(): String = preferences.getString(KEY_IPDATA_API_KEY, "").orEmpty()
+    fun getIpdataApiKey(): String {
+        vault.load("ipdata")?.let { return it }
+        val legacy = preferences.getString(KEY_IPDATA_API_KEY, "").orEmpty()
+        if (legacy.isNotEmpty()) { vault.save("ipdata", legacy); preferences.edit().remove(KEY_IPDATA_API_KEY).apply() }
+        return legacy
+    }
 
     fun setIpdataApiKey(value: String) {
-        preferences.edit().putString(KEY_IPDATA_API_KEY, value.trim()).apply()
+        vault.save("ipdata", value.trim().takeIf { it.isNotEmpty() })
+        preferences.edit().remove(KEY_IPDATA_API_KEY).apply()
+    }
+
+    fun getStaticExitCredential(): JSONObject? = vault.load("static-exit")?.let(::JSONObject)
+    fun setStaticExitCredential(value: JSONObject?) = vault.save("static-exit", value?.toString())
+    fun corePreferences(): JSONObject = runCatching { JSONObject(preferences.getString("corePreferences", "{}").orEmpty()) }.getOrDefault(JSONObject())
+    fun syncFromCore(value: JSONObject) {
+        preferences.edit().putString("corePreferences", value.toString())
+            .putString(KEY_SELECTED_PROXY, value.optString("selectedProxy", getSelectedProxy()))
+            .putString(KEY_UNKNOWN_TRAFFIC, value.optString("unknownTraffic", getUnknownTraffic()))
+            .putString(KEY_RULES, (value.optJSONArray("vpnDomainRules") ?: JSONArray(getVpnDomainRules())).toString()).apply()
     }
 
     fun getVpnDomainRules(): List<String> {

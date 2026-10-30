@@ -11,7 +11,7 @@ public sealed class OverviewPage : PageBase
     readonly ScrollViewer view;
     readonly TextBlock title, subtitle, pill = Ui.Text("", 13, bold: true);
     readonly TextBlock modeValue, modeNote, proxyValue, loginValue;
-    readonly TextBlock domestic = Ui.Text(), foreign = Ui.Text(), ip = Ui.Text(), risk = Ui.Text(), connNote = Ui.Note();
+    readonly TextBlock domestic = Ui.Text(), foreign = Ui.Text(), dns = Ui.Text(), chatgpt = Ui.Text(), ip = Ui.Text(), risk = Ui.Text(), connNote = Ui.Note();
     readonly StackPanel sites = new();
     readonly TextBlock connTiming = Ui.Note(), siteTiming = Ui.Note();
     readonly TextBlock counts = Ui.Text("", 12, secondary: true);
@@ -25,7 +25,12 @@ public sealed class OverviewPage : PageBase
         var header = Ui.Header("网络总览", "选择节点后连接 VPN", out title, out subtitle);
         connect = Ui.Button("连接 VPN", S.ConnectOrDisconnect, accent: true);
         connect.MinWidth = 110;
-        var top = Ui.Bar(Ui.Row(pill, connect), header);
+        var top = Ui.Card(Ui.Bar(Ui.Stack(12, pill, connect), header), 26);
+        top.CornerRadius = new CornerRadius(22);
+        top.SetResourceReference(Border.BackgroundProperty, "BrandHero");
+        top.BorderThickness = new Thickness(0);
+        title.SetResourceReference(TextBlock.ForegroundProperty, "BrandHeroText");
+        subtitle.SetResourceReference(TextBlock.ForegroundProperty, "BrandHeroMuted");
         retry = Ui.Button("重试连接", S.RetryRecovery);
         recovery = Ui.Card(Ui.Stack(10, recoveryNote, retry));
         recovery.Visibility = Visibility.Collapsed;
@@ -37,8 +42,9 @@ public sealed class OverviewPage : PageBase
 
         update = Ui.Button("更新订阅", () => S.Act("更新订阅", "subscription:update"));
         var actions = Ui.Row(
-            Ui.Button("切换节点", () => S.Go("节点")),
+            Ui.Button("切换节点", () => S.Go("节点"), accent: true),
             Ui.Button("节点组", () => S.Go("节点组")),
+            Ui.Button("ISP 线路", () => S.Go("ISP 线路")),
             update,
             Ui.Button("分流规则", () => S.Go("分流规则")),
             Ui.Button("流量监控", () => S.Go("流量")));
@@ -46,7 +52,7 @@ public sealed class OverviewPage : PageBase
         check = Ui.Button("检测", S.CheckConnectivity);
         var connectivity = Ui.Card(Ui.Stack(12,
             Ui.Bar(check, Ui.Text("连接检测", 16, bold: true)),
-            Line("国内网络", domestic), Line("国外网络", foreign), Line("出口 IP", ip), Line("出口风险", risk),
+            Line("国内网络", domestic), Line("代理出口", foreign), Line("系统 DNS", dns), Line("ChatGPT", chatgpt), Line("出口 IP", ip), Line("出口风险", risk),
             connNote, connTiming), 18);
         websites = Ui.Button("检测", S.TestWebsites);
         var siteCard = Ui.Card(Ui.Stack(12,
@@ -62,7 +68,7 @@ public sealed class OverviewPage : PageBase
         pair.Children.Add(connectivity);
         pair.Children.Add(siteCard);
 
-        var body = Ui.Stack(16, top, recovery, cards, actions, pair, Ui.Bar(Link("管理订阅", () => S.Go("订阅")), counts));
+        var body = Ui.Stack(20, top, recovery, cards, actions, Ui.Text("网络质量", 16, bold: true), pair, Ui.Bar(Link("管理订阅", () => S.Go("订阅")), counts));
         body.Margin = new Thickness(28, 24, 28, 20);
         view = Scroll(body);
     }
@@ -97,7 +103,7 @@ public sealed class OverviewPage : PageBase
         title.Text = !loaded ? "读取当前网络…" : S.Connected ? "智能分流中" : "网络总览";
         subtitle.Text = S.Recovering ? S.RecoveryMessage : S.Connected ? $"内核已运行 · {Uptime(S.Status.At("mihomo").At("startedAt").Str())}" : "选择节点后连接 VPN";
         pill.Text = $"{(S.Connected ? "●" : "○")} {S.ConnectionLabel}";
-        Ui.Tone(pill, S.Connected ? "good" : "muted");
+        pill.SetResourceReference(TextBlock.ForegroundProperty, "BrandHeroMuted");
         connect.Content = S.ConnectionProtected ? "验证连接" : (S.CanDisconnect || S.ConnectionRequested) ? "断开 VPN" : "连接 VPN";
         foreach (var button in new[] { check, websites, update }) button.IsEnabled = S.CanMutate;
         connect.IsEnabled = S.CanControlConnection;
@@ -114,10 +120,12 @@ public sealed class OverviewPage : PageBase
 
         var c = S.Connectivity.At("connectivity");
         domestic.Text = Check(c.At("domesticOk").Bool(), c.At("latency").At("domesticMs").Num());
-        foreign.Text = Check(c.At("foreignOk").Bool(), c.At("latency").At("foreignMs").Num());
-        ip.Text = c.At("externalIp").Str() ?? S.CurrentRisk.At("ip").Str() ?? "尚未读取";
-        risk.Text = S.CurrentRisk is null ? "尚未检测" : RiskLabel(S.CurrentRisk);
-        connNote.Text = c.At("error").Str()
+        foreign.Text = Check(c.At("proxyOk").Bool() ?? c.At("foreignOk").Bool(), c.At("latency").At("foreignMs").Num());
+        dns.Text = ProbeText(c.At("systemDns"));
+        chatgpt.Text = ProbeText(c.At("chatgpt"));
+        ip.Text = c.At("externalIp").Str() ?? "尚未读取";
+        risk.Text = S.CurrentRisk is null ? "待检测" : $"{RiskLabel(S.CurrentRisk)} · {Ui.Date(S.CurrentRisk.At("checkedAt").Str())}";
+        connNote.Text = S.Diagnostics.At("connectivity").At("error").Str() ?? c.At("error").Str()
             ?? (S.CurrentRisk is { } r ? $"风险记录：{Ui.Date(r.At("checkedAt").Str())}" : "检测包含系统 DNS 与 ChatGPT 网络响应。");
 
         connTiming.Text = S.DiagnosticTiming("connectivity");
@@ -131,13 +139,15 @@ public sealed class OverviewPage : PageBase
         if (results.Count == 0)
         {
             Ui.Add(sites, Ui.Text("Google · ChatGPT · Claude", 15, bold: true), 8);
-            Ui.Add(sites, Ui.Text("通过当前出口检测站点响应，结果在此显示。", 13, secondary: true, wrap: true), 0);
+            Ui.Add(sites, Ui.Text("连接后自动检测站点响应，结果在此显示。", 13, secondary: true, wrap: true), 0);
         }
         foreach (var item in results)
         {
             var value = Ui.Text(item.At("ok").Bool() == true ? (item.At("delay").Num() is { } d ? $"{d:0} ms" : "连通") : item.At("failureReason").Str() == "restricted" ? $"访问受限 · {item.At("httpStatus").Num():0}" : item.At("failureReason").Str() == "timeout" ? "响应超时" : "未连通");
             Ui.Add(sites, Line(item.At("label").Str() ?? "", value), 10);
         }
+        if (S.Diagnostics.At("websites").At("error").Str() is { } siteError)
+            Ui.Add(sites, Ui.Warning(siteError), 6);
 
         var status = S.Status;
         string N(double? n) => n is { } v ? $"{v:0}" : "—";
@@ -146,6 +156,15 @@ public sealed class OverviewPage : PageBase
             $"{S.Groups.Count} 节点组    {N(settings.At("vpnDomainRules").Items().Count())} 分流规则";
     }
 
+    public static string ProbeText(JsonNode? probe)
+    {
+        if (probe is null) return "尚未检测";
+        if (probe.At("ok").Bool() == true) return "正常";
+        var status = probe.At("httpStatus").Num();
+        if (probe.At("failureReason").Str() == "restricted" || status is 403 or 429 or 451)
+            return status is { } code ? $"访问受限 · {code:0}" : "访问受限";
+        return probe.At("failureReason").Str() == "timeout" ? "响应超时" : "未连通";
+    }
     static string Check(bool? ok, double? ms) => ok switch
     {
         null => "尚未检测",
@@ -334,6 +353,7 @@ public sealed class NodesPage : PageBase
             Ui.Bar(batch),
             Wrap(select, speedSelected, speedAll, favorite, recommended, udp, cancel),
             Ui.Note("按住 Ctrl 或 Shift 多选；双击节点设为当前出口。国家和地区由节点名称识别，风险显示上次实际出口检测结果。"));
+        view.Loaded += async (_, _) => await S.RefreshNodes();
     }
 
     static WrapPanel Wrap(params UIElement[] items) {
@@ -368,7 +388,7 @@ public sealed class NodesPage : PageBase
     {
         if (trafficOnly) return;
         SyncSubscriptions();
-        subtitle.Text = $"当前出口：{S.DisplaySelectedProxy}";
+        subtitle.Text = S.NodesError is { } error ? $"节点读取失败：{error}" : $"当前出口：{S.DisplaySelectedProxy}";
         var subscriptionId = (subscription.SelectedItem as ComboBoxItem)?.Tag as string ?? "all";
         var favorites = S.Favorites;
         var query = search.Text.Trim();

@@ -15,14 +15,17 @@ struct SidebarNavigationRow: View {
                 Spacer(minLength: 4)
                 if let count {
                     Text(count).font(.system(size: 10, weight: .medium)).monospacedDigit()
+                        .padding(.horizontal, 6).padding(.vertical, 3)
+                        .background(selected ? VPNTheme.accent.opacity(0.08) : .clear, in: Capsule())
                         .foregroundStyle(selected ? VPNTheme.accent : VPNTheme.secondary)
                 }
-            }.padding(.horizontal, 13).frame(height: 38)
+            }.padding(.horizontal, 13).frame(height: 40)
                 .foregroundStyle(selected ? VPNTheme.accent : VPNTheme.text)
-                .background(selected ? VPNTheme.selection : hovered ? VPNTheme.secondary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 8))
+                .background(selected ? VPNTheme.selection : hovered ? VPNTheme.secondary.opacity(0.07) : .clear, in: RoundedRectangle(cornerRadius: 9))
                 .contentShape(Rectangle())
         }.buttonStyle(.plain).onHover { hovered = $0 }
             .animation(reduceMotion ? nil : .easeOut(duration: 0.14), value: hovered)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.18), value: selected)
             .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

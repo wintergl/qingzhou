@@ -2,9 +2,9 @@
 
 让个人 VPN、局域网和私有网络各走其路的原生智能分流客户端。共享 Rust 核心负责订阅、节点与规则，macOS / Windows / iOS / Android 使用各自的原生界面和系统 VPN 接入。
 
-当前源码版本为 **0.6.10**。桌面端提供 aTrust 私有网络接入；地址和账号由用户配置，EasyConnect 尚未接入。各端安装包和真实联网按平台分别验收。
+当前源码版本为 **0.6.24**。四端提供 aTrust 私有网络接入；地址和账号由用户配置，EasyConnect 尚未接入。各端安装包和真实联网按平台分别验收。
 
-本轮汇总桌面断开响应、DNS/出口分级恢复、Android DNS 路径与检测界面改进，详见 [0.6.10 更新说明](docs/RELEASE_0.6.10.md)。GitHub 附件继续作为预发布，签名和设备验收限制见说明。
+本轮同步静态 ISP 出口、线路比较与备用切换、跨订阅自动换线、移动端功能补齐和 aTrust 接入，详见 [0.6.24 更新说明](docs/RELEASE_0.6.24.md)。GitHub 附件继续作为预发布，签名和设备验收限制见说明。
 
 macOS / Windows 已接入网络切换、断网恢复和睡眠唤醒的自动处理，并根据窗口可见性与系统省电状态减少后台工作，详见 [macOS](apps/macos-native/README.md#网络切换与后台省电) / [Windows](apps/windows/README.md#网络切换与后台省电)。Windows 原生通知与实际耗电量仍待实机测试。
 
@@ -23,7 +23,8 @@ macOS / Windows 已接入网络切换、断网恢复和睡眠唤醒的自动处�
 - 导入 Clash / Mihomo / URI 订阅，管理节点、收藏、分组和测速。
 - 按域名与网络规则分流，保留局域网、Tailscale、NAS 和路由器的直连访问。
 - 查看连通性、流量、风险与脱敏日志。
-- 在 macOS / Windows 登录私有网络，获取授权资源，通过 TCP 隧道接入。
+- 在四端登录 aTrust 私有网络，获取授权资源，通过 TCP 隧道接入。
+- 配置[静态 ISP 出口](docs/STATIC_ISP_EXIT.md)，[比较和维护上游线路](docs/CHAIN_SCAN.md)；桌面可保存跨订阅备用线路并在连续出口异常后先复核再切换。
 
 需要 Shadowrocket 格式的订阅，可在服务商提供的网址中显式设置 `list=shadowrocket`；源码不根据服务商域名自动选择格式。
 

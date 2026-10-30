@@ -156,10 +156,16 @@ final class AppGroupStore {
         readOptional("generated/config.json")
     }
 
+    func saveActiveTunnelConfig(_ raw: String) throws -> URL {
+        let destination = url("runtime/active-sing-box.json")
+        try writeProtected(Data(raw.utf8), to: destination)
+        return destination
+    }
+
     func saveGeneratedConfig(_ value: GeneratedTunnelConfig) throws {
         try write(value, to: "generated/config.json")
         if let singBoxJSON = value.singBoxJSON {
-            try singBoxJSON.write(to: url("generated/sing-box.json"), atomically: true, encoding: .utf8)
+            try writeProtected(Data(singBoxJSON.utf8), to: url("generated/sing-box.json"))
         }
     }
 
@@ -520,7 +526,16 @@ final class AppGroupStore {
             withIntermediateDirectories: true
         )
         let data = try encoder.encode(value)
+        try writeProtected(data, to: fileURL)
+    }
+
+    private func writeProtected(_ data: Data, to fileURL: URL) throws {
+        #if os(iOS)
+        try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+        #else
         try data.write(to: fileURL, options: .atomic)
+        #endif
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
     }
 
     private func removeIfExists(_ relativePath: String) throws {

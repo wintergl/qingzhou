@@ -10,7 +10,7 @@
 |---|---|
 | macOS | macOS 14+、完整 Xcode 与 Command Line Tools；用 `xcode-select -p` 确认选择了 Xcode |
 | Windows x64 安装包 | 当前打包入口在 macOS 交叉构建；需要 .NET SDK 10、MinGW-w64 和 Rust GNU Windows target |
-| iOS | 完整 Xcode、iOS 17+ SDK、Rust 三个 Apple 移动目标；Go 1.26.4、gomobile/gobind v0.1.13 由脚本选择 |
+| iOS | 完整 Xcode、iOS 17+ SDK、Rust 三个 Apple 移动目标；Go 1.26.4、gomobile/gobind v0.1.12 由脚本选择 |
 | Android arm64 | macOS 或 Linux；JDK 17+、Android SDK 35、NDK 27.0.12077973、CMake 3.22.1；Gradle 8.14.3 使用已提交的 Wrapper |
 
 可在 macOS 用 Homebrew 安装 Git、curl、Python、Go、MinGW-w64 和 .NET；Rust 按官方 rustup 安装。Android SDK/NDK/CMake 可由 Android Studio SDK Manager 安装。先自行安装这些工具，准备脚本不自动修改系统 SDK。工具安装入口：[Rust](https://www.rust-lang.org/tools/install)、[Go](https://go.dev/dl/)、[Xcode](https://developer.apple.com/xcode/)、[.NET](https://dotnet.microsoft.com/download)、[Android Studio](https://developer.android.com/studio)。
@@ -59,7 +59,7 @@ python3 scripts/prepare-third-party.py --platform android-arm64 --check
 python3 apps/android/tests/check_apk.py apps/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-输出 `apps/android/app/build/outputs/apk/debug/app-debug.apk`。准备脚本从固定源码构建 Mihomo 与 tun2socks，并生成 Rust JNI 静态库；不会把普通 Linux 可执行文件随意改名充当 Android 内核。tun2socks 使用本项目已验证的无 libc 静态构建，Mihomo 使用 NDK API 26 编译。构建入口核对源码收据、入口点和 16 KB 对齐。Gradle 预构建任务自动收集许可到 APK 的 `assets/third-party-licenses/`。
+输出 `apps/android/app/build/outputs/apk/debug/app-debug.apk`。准备脚本从固定源码构建 Mihomo 与 tun2socks，生成 Rust JNI 静态库，并构建 aTrust CompanyCore AAR；不会把普通 Linux 可执行文件随意改名充当 Android 内核。tun2socks 使用本项目已验证的无 libc 静态构建，Mihomo 使用 NDK API 26 编译。构建入口核对源码收据、入口点和 16 KB 对齐。Gradle 预构建任务自动收集许可到 APK 的 `assets/third-party-licenses/`。
 
 Gradle Wrapper 的 ZIP 与 JAR 均固定官方 SHA-256。调试构建使用构建者自己的本地调试签名；正式发行 keystore 不进入源码。SDK、JDK、缓存隔离和真机限制见 [Android README](../apps/android/README.md)。
 
@@ -73,7 +73,7 @@ apps/iphone/Scripts/check-iphone-readiness.sh
 xcodebuild -project apps/iphone/SplitVpn.xcodeproj -scheme SplitVpnIphone -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath .local/ios-simulator CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build
 ```
 
-准备步骤固定 sing-box、Go 与 gomobile，重建 Rust / Libbox XCFramework，包含设备 arm64 和模拟器 arm64/x86_64。`readiness` 编译无签名设备目标并运行主机配置、恢复及 sing-box 校验。完整 Xcode 构建会把许可清单放入 App。完整命令与本地签名配置见 [iPhone README](../apps/iphone/README.md)。没有开发者团队或设备描述文件也能做无签名构建；安装到真机需构建者自行配置团队、App Group、Packet Tunnel 权限与签名。
+准备步骤固定 sing-box、Go 与 gomobile，重建 Rust XCFramework 和 Libbox + companymobile 组合 XCFramework，包含设备 arm64 和模拟器 arm64/x86_64。组合库保存在 `packages/company-vpn/.local/mobile/Libbox.xcframework`，应用和扩展共用一个 Go 运行时。`readiness` 编译无签名设备目标并运行主机配置、恢复及 sing-box 校验。完整 Xcode 构建会把许可清单放入 App。完整命令与本地签名配置见 [iPhone README](../apps/iphone/README.md)。没有开发者团队或设备描述文件也能做无签名构建；安装到真机需构建者自行配置团队、App Group、Packet Tunnel 权限与签名。
 
 ## Geo 数据和许可文件
 

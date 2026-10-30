@@ -114,6 +114,8 @@ final class ConnectivityProbeService {
         self.session = URLSession(configuration: configuration, delegate: metricsCollector, delegateQueue: nil)
     }
 
+    deinit { session.invalidateAndCancel() }
+
     func runAll(
         targets: [ConnectivityProbeTarget],
         roundCount: Int = ConnectivityProbeService.defaultRoundCount

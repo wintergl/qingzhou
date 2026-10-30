@@ -21,7 +21,7 @@ final class CoreClient {
 
     /// Runs one `{channel, payload}` request off the main thread and returns `data`.
     func call(_ channel: String, _ payload: [String: Any] = [:]) async throws -> Any {
-        let body = try JSONSerialization.data(withJSONObject: ["channel": channel, "payload": payload])
+        let body = try MobileCoreBridge.request(channel: channel, payload: payload)
         let request = String(decoding: body, as: UTF8.self)
         let root = rootURL.path
         let reply = await Task.detached(priority: .userInitiated) {
@@ -69,7 +69,12 @@ final class CoreClient {
                 server: node["server"] as? String ?? "",
                 port: node["port"] as? Int,
                 rawURI: nil,
-                metadata: (node["runtimeUdpSupported"] as? Bool).map { ["udp": String($0)] }
+                metadata: (node["runtimeUdpSupported"] as? Bool).map { ["udp": String($0)] },
+                identityKey: node["identityKey"] as? String,
+                subscriptionId: node["subscriptionId"] as? String,
+                subscriptionName: node["subscriptionName"] as? String,
+                identityAmbiguous: node["identityAmbiguous"] as? Bool,
+                iosSupported: node["iosSupported"] as? Bool
             )
         }
     }
@@ -97,16 +102,20 @@ final class CoreClient {
         domains: VpnDomainList,
         geoRoutingResources: GeoRoutingResources?
     ) async throws -> GeneratedTunnelConfig {
-        _ = try await call("settings:patch", [
+        let preferences = try await object("settings:patch", [
             "selectedProxy": settings.selectedProxy,
             "unknownTraffic": settings.unknownTrafficPolicy,
-            "vpnDomainRules": domains.domains.map(Self.vpnDomainRule)
+            "vpnDomainRules": domains.domains
         ])
 
         var payload: [String: Any] = [
             "mtu": settings.packetTunnelMTU,
             "domainResolver": settings.proxyServerDomainResolver
         ]
+        if !((preferences["staticExit"] as? [String: Any])?["server"] as? String ?? "").isEmpty,
+           let credential = try MobileSecretVault.load("static-exit") {
+            payload["exitCredential"] = try JSONSerialization.jsonObject(with: credential)
+        }
         if let geo = geoRoutingResources, geo.isAvailable {
             payload["geo"] = [
                 "geositeCn": geo.geositeCNPath,
@@ -132,7 +141,8 @@ final class CoreClient {
             vpnDomains: domains.domains,
             generatedAt: Date(),
             yaml: "",
-            singBoxJSON: config
+            singBoxJSON: config,
+            runtimeRevision: summary["runtimeRevision"] as? String
         )
     }
 
@@ -144,11 +154,7 @@ final class CoreClient {
     // MARK: - FFI
 
     private static func invoke(root: String, request: String) -> String {
-        guard let reply = qz_core_call(root, request) else {
-            return #"{"ok":false,"error":{"code":"CORE_NULL_REPLY","message":"核心没有返回结果"}}"#
-        }
-        defer { qz_core_free(reply) }
-        return String(cString: reply)
+        MobileCoreBridge.invoke(root: root, request: request)
     }
 
     private static func decode(_ reply: String) throws -> Any {

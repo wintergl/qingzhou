@@ -18,6 +18,7 @@ public sealed class CoreClient : ICoreClient
     StreamWriter? stdin;
     long next;
     IntPtr job;
+    public Func<JsonObject?> ReadExitCredential { get; set; } = () => null;
 
     /// Raised on a background thread.
     public event Action<string, JsonNode?>? Event;
@@ -90,7 +91,19 @@ public sealed class CoreClient : ICoreClient
         }) { IsBackground = true, Name = "core-stdout" }.Start();
     }
 
-    public Task<JsonNode?> Request(string channel, JsonObject? payload = null)
+    public async Task<JsonNode?> Request(string channel, JsonObject? payload = null)
+    {
+        var proactive = (channel == "static-exit:set-enabled" && payload.At("enabled").Bool() == true) || channel is "chain-scan:start" or "chain-scan:use";
+        if (proactive || channel is "vpn:start" or "native:startup-connect" or "nodes:select" or "nodes:select-v2" or "routing:update" or "routing:add-rule" or "routing:edit-rule" or "routing:delete-rule" or "native:preferences" or "static-exit:test" or "chain-scan:connect")
+        {
+            var needed = proactive || (await RequestRaw("static-exit:needs-credential")).Bool() == true;
+            if (needed && await Task.Run(ReadExitCredential) is { } credential)
+                await RequestRaw("static-exit:credential", credential);
+        }
+        return await RequestRaw(channel, payload);
+    }
+
+    Task<JsonNode?> RequestRaw(string channel, JsonObject? payload = null)
     {
         var id = "w" + Interlocked.Increment(ref next);
         var waiter = new TaskCompletionSource<JsonNode?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -126,7 +139,7 @@ public sealed class CoreClient : ICoreClient
     /// Longest wait for one reply, covering engine start and slow downloads.
     static TimeSpan TimeoutFor(string channel) => channel switch
     {
-        "diagnostics:get-state" or "native:bootstrap" or "vpn:get-status" or "traffic:get-monitor" or "traffic:get-snapshot" or "nodes:list" or "node-groups:list" => TimeSpan.FromSeconds(8),
+        "diagnostics:get-state" or "native:bootstrap" or "vpn:get-status" or "traffic:get-monitor" or "traffic:get-snapshot" or "nodes:list" or "node-groups:list" or "chain-scan:get" or "chain-scan:history" or "chain-scan:use-state" or "static-exit:needs-credential" => TimeSpan.FromSeconds(8),
         "vpn:stop" => TimeSpan.FromSeconds(45),
         "nodes:test" or "nodes:test-recommended" or "connectivity:check" or "connectivity:test-website-speeds" => TimeSpan.FromSeconds(40),
         _ => TimeSpan.FromMinutes(5),

@@ -1141,7 +1141,7 @@ dependencies = [
 
 [[package]]
 name = "splitvpn-core"
-version = "0.6.10"
+version = "0.6.24"
 dependencies = [
  "anyhow",
  "base64 0.22.1",

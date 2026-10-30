@@ -111,6 +111,25 @@ final class NetworkRecoveryTests: XCTestCase {
         XCTAssertNil(activity.pollingInterval(statusKnown: false, running: false))
     }
 
+    func testIspPollingStopsWhenHiddenOrSleepingAndSlowsWhenIdle() {
+        var activity = DesktopActivity(onBattery: false)
+        XCTAssertNil(activity.chainPollingInterval(running: true))
+        XCTAssertNil(activity.chainPollingInterval(running: false))
+        activity.visible = true
+        XCTAssertEqual(activity.chainPollingInterval(running: true), .seconds(1))
+        XCTAssertEqual(activity.chainPollingInterval(running: false), .seconds(15))
+        activity.onBattery = true
+        XCTAssertEqual(activity.chainPollingInterval(running: true), .seconds(2))
+        XCTAssertEqual(activity.chainPollingInterval(running: false), .seconds(30))
+        activity.onBattery = false; activity.lowPower = true
+        XCTAssertEqual(activity.chainPollingInterval(running: false), .seconds(30))
+        activity.sleeping = true
+        XCTAssertNil(activity.chainPollingInterval(running: true))
+        XCTAssertNil(activity.chainPollingInterval(running: false))
+        activity.sleeping = false; activity.visible = false
+        XCTAssertNil(activity.chainPollingInterval(running: false))
+    }
+
     @MainActor func testAPathEventStillReachesTheCoreAfterFailedRecovery() async throws {
         let f = try MenuBarFixture(); defer { f.close() }
         f.coreModel.running = false; f.coreModel.networkState = "failed"
@@ -142,7 +161,7 @@ final class NetworkRecoveryTests: XCTestCase {
         let center = NotificationCenter(), workspace = NotificationCenter()
         var lowPower = false
         var received: [DesktopActivity] = []
-        let service = NativeActivityService(center: center, workspace: workspace, readState: { (true, lowPower) })
+        let service = NativeActivityService(center: center, workspace: workspace, readState: { (true, lowPower) }, readPower: { false })
         service.start { received.append($0) }
         XCTAssertEqual(received.count, 1)
         workspace.post(name: NSWorkspace.willSleepNotification, object: nil)
@@ -157,5 +176,22 @@ final class NetworkRecoveryTests: XCTestCase {
         workspace.post(name: NSWorkspace.willSleepNotification, object: nil)
         await Task.yield()
         XCTAssertEqual(received.count, 4)
+    }
+
+    @MainActor func testPowerSourceChangesAreReported() async {
+        let center = NotificationCenter(), workspace = NotificationCenter()
+        var onBattery: Bool? = false
+        var received: [DesktopActivity] = []
+        let service = NativeActivityService(center: center, workspace: workspace,
+            readState: { (true, false) }, readPower: { onBattery })
+        service.start { received.append($0) }
+        XCTAssertEqual(received.last?.onBattery, false)
+        onBattery = true
+        center.post(name: .NSProcessInfoPowerStateDidChange, object: nil)
+        await menuWait { received.last?.onBattery == true }
+        onBattery = nil
+        center.post(name: .NSProcessInfoPowerStateDidChange, object: nil)
+        await menuWait { received.last?.onBattery == nil }
+        service.stop()
     }
 }

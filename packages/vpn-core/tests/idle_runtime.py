@@ -55,8 +55,16 @@ def measure(binary, seconds):
         try:
             process.stdin.write(json.dumps({"id": "idle-check", "channel": "core:capabilities"}) + "\n")
             process.stdin.flush()
-            reply = lines.get(timeout=10)
-            assert reply.get("id") == "idle-check" and reply.get("ok"), reply
+            startup_events = {}
+            deadline = time.monotonic() + 10
+            while True:
+                reply = lines.get(timeout=max(0.001, deadline-time.monotonic()))
+                if reply.get("id") == "idle-check":
+                    assert reply.get("ok"), reply
+                    break
+                assert "event" in reply, reply
+                name = reply["event"]
+                startup_events[name] = startup_events.get(name,0) + 1
             start = time.monotonic()
             initial_wakeups = wakeups(process.pid)
             deadline = start + seconds
@@ -77,7 +85,7 @@ def measure(binary, seconds):
             assert process.returncode == 0, process.stderr.read()
             after = resource.getrusage(resource.RUSAGE_CHILDREN)
             return {"isolated": True, "vpnStarted": False, "sampleSeconds": seconds,
-                    "events": events, "exitSeconds": round(exit_seconds, 4),
+                    "startupEvents": startup_events, "events": events, "exitSeconds": round(exit_seconds, 4),
                     "macOSWakeupsDuringSample": {key: final_wakeups[key] - initial_wakeups[key]
                         for key in initial_wakeups} if initial_wakeups is not None and final_wakeups is not None else None,
                     "cpuSecondsIncludingStartupAndExit": round(

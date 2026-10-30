@@ -145,3 +145,5 @@ apps/iphone/Scripts/package-ios.sh /path/to/output
 8. 对比同一设备、同一节点、相近使用强度的 2 小时普通/低电量模式耗电，记录设备型号和 iOS 版本。
 
 当前文档保留未完成的设备验收边界，不把历史构建成功作为真机通过。上游参考为 [sing-box](https://github.com/SagerNet/sing-box)、[sing-box-for-apple](https://github.com/SagerNet/sing-box-for-apple) 和 [Apple Packet Tunnel](https://developer.apple.com/documentation/networkextension/nepackettunnelprovider)。许可证与对应源码事项见 [第三方依赖说明](../../docs/THIRD_PARTY.md)。
+
+移动 aTrust 使用 App 与扩展共用的组合 Go 运行库。先运行 `python3 packages/company-vpn/prepare_mobile.py` 和 `python3 packages/company-vpn/build_mobile.py ios --skip-prepare`；不要以原单独 Libbox 替代组合库。具体架构、认证范围与测试见 [移动接入说明](../../packages/company-vpn/mobile/README.md)。

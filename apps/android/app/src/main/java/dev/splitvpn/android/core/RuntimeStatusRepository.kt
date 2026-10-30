@@ -25,7 +25,8 @@ class RuntimeStatusRepository internal constructor(private val preferences: Shar
             tun2socksPid = preferences.getInt(KEY_TUN2SOCKS_PID, 0),
             alwaysOn = preferences.getBoolean("alwaysOn", false),
             networkEpoch = preferences.getLong("networkEpoch", 0),
-            retryAt = preferences.getLong("retryAt", 0)
+            retryAt = preferences.getLong("retryAt", 0),
+            configurationRevision = preferences.getString("configurationRevision", "").orEmpty()
         )
     }
 
@@ -43,11 +44,12 @@ class RuntimeStatusRepository internal constructor(private val preferences: Shar
             .apply()
     }
 
-    fun markConnected(selectedProxy: String, tun2socksPid: Int) {
+    fun markConnected(selectedProxy: String, tun2socksPid: Int, revision: String = "") {
         val current = get()
         val now = now()
         preferences.edit()
             .putString(KEY_STATE, STATE_CONNECTED)
+            .putString("configurationRevision", revision)
             .putLong("networkEpoch", current.networkEpoch + 1)
             .putString(KEY_STARTED_AT, current.startedAt.ifBlank { now })
             .putString(KEY_UPDATED_AT, now)

@@ -210,6 +210,16 @@ pub fn build(
             rules.push(QUIC_RULES_REJECT.into());
         }
         rules.push("RULE-SET,vpn-domains,VPN".into());
+        if settings["specialCompatibilityRules"]["mailMasterDirect"] == true {
+            rules.extend([
+                "PROCESS-NAME,MailMaster,DIRECT".into(),
+                "PROCESS-NAME,MailMaster.exe,DIRECT".into(),
+                "PROCESS-NAME,mailmaster.exe,DIRECT".into(),
+            ]);
+        }
+        // Domestic traffic must not be captured by the process-wide WeChat
+        // compatibility fallback. Explicit user outlets still take precedence.
+        rules.extend(cn_direct);
         if wechat {
             rules.extend([
                 "PROCESS-NAME,WeChat,WECHAT".into(),
@@ -222,7 +232,6 @@ pub fn build(
                 .unwrap()
                 .retain(|g| g["name"] != "WECHAT");
         }
-        rules.extend(cn_direct);
         rules.push(if udp {
             QUIC_VPN.into()
         } else {

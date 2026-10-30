@@ -100,10 +100,10 @@ else
   warn "App Group is not fully build-setting driven in plist and entitlements"
 fi
 
-if [[ -f "${ROOT_DIR}/ThirdParty/SingBoxFrameworks/Libbox.xcframework/Info.plist" ]]; then
-  ok "Required Libbox.xcframework staged"
+if [[ -d "${REPO_DIR}/packages/company-vpn/.local/mobile/Libbox.xcframework" ]]; then
+  ok "Sing-box framework artifacts staged"
 else
-  fail "Missing Libbox.xcframework; run Scripts/build-sing-box-libbox.sh"
+  fail "Missing combined Libbox.xcframework; run packages/company-vpn/build_mobile.py ios"
 fi
 
 if grep -R "core: PacketTunnelCore = MissingPacketTunnelCore()" "${ROOT_DIR}/PacketTunnel" >/dev/null 2>&1; then
@@ -183,6 +183,12 @@ else
   fail "TunnelRecoverySmoke failed"
 fi
 
+if CLANG_MODULE_CACHE_PATH=/private/tmp/split-vpn-swift-module-cache swiftc -parse-as-library "${ROOT_DIR}/Shared/CompanyTransferBuffer.swift" "${ROOT_DIR}/Tests/CompanyTransferSmoke.swift" -o /private/tmp/split-vpn-company-transfer-smoke && /private/tmp/split-vpn-company-transfer-smoke; then
+  ok "CompanyTransferSmoke passes"
+else
+  fail "CompanyTransferSmoke failed"
+fi
+
 if command -v swiftc >/dev/null 2>&1; then
   if (
     cd "${REPO_DIR}" &&
@@ -210,7 +216,7 @@ else
   fail "ConfigGenerationSmoke failed; see ${CHECK_DIR}/split-vpn-iphone-config-smoke.log"
 fi
 
-SING_BOX_SRC="${ROOT_DIR}/ThirdParty/sing-box-src"
+SING_BOX_SRC="${REPO_DIR}/packages/company-vpn/.local/mobile/libbox-source"
 GENERATED_SING_BOX_CONFIG="${CHECK_DIR}/split-vpn-iphone-generated-sing-box.json"
 # The Swift fixture uses neutral /private/tmp paths; relocate only the exported
 # check input so concurrent readiness runs never share rule-set files.

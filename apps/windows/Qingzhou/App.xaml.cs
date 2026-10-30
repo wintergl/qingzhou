@@ -33,7 +33,7 @@ public partial class App : Application
         FrameworkElement.LanguageProperty.OverrideMetadata(typeof(FrameworkElement),
             new FrameworkPropertyMetadata(XmlLanguage.GetLanguage(CultureInfo.GetCultureInfo("zh-CN").IetfLanguageTag)));
         Appearance.Apply(Appearance.Load());
-        store = new Store();
+        store = new Store(new CoreClient { ReadExitCredential = StaticExitVault.Load }) { ReadExitCredential = StaticExitVault.Load, WriteExitCredential = StaticExitVault.Save };
         company = new CompanyStore(store);
         var window = new MainWindow(store, company);
         MainWindow = window;

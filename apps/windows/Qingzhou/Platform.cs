@@ -37,12 +37,16 @@ public static class Appearance
         try { File.WriteAllText(FilePath, new JsonObject { ["appearance"] = value }.ToJsonString()); } catch { }
     }
 
-    public static void Apply(string value) => Application.Current.ThemeMode = value switch
+    public static void Apply(string value)
     {
-        "light" => ThemeMode.Light,
-        "dark" => ThemeMode.Dark,
-        _ => ThemeMode.System,
-    };
+        Application.Current.ThemeMode = value switch
+        {
+            "light" => ThemeMode.Light,
+            "dark" => ThemeMode.Dark,
+            _ => ThemeMode.System,
+        };
+        BrandTheme.Apply(value);
+    }
 }
 
 /// Launch at logon through Task Scheduler: it can start an elevated app without a UAC prompt.

@@ -2,10 +2,11 @@ import SwiftUI
 
 struct MihomoUptimeView: View {
     @ObservedObject var store: VPNStore
+    var foreground: Color = VPNTheme.secondary
     var body: some View {
         TimelineView(.periodic(from: .now, by: 60)) { context in
             Label(store.statusKnown ? store.running ? "内核已运行 \(RuntimeTime.uptime(store.status?.mihomo.startedAt, at: context.date))" : "内核未运行" : "内核状态未知", systemImage: "clock")
-                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .font(.system(size: 12)).foregroundStyle(foreground)
         }
     }
 }

@@ -52,14 +52,15 @@ shutil.copytree(ROOT / 'overlay', source, dirs_exist_ok=True)
 auth = source / 'client/atrust/auth/auth.go'
 add_import(auth, 'companycert')
 replace_once(auth, 'InsecureSkipVerify: true,', 'InsecureSkipVerify: true,\n\t\t\tVerifyConnection: companycert.VerifyConnection,\n\t\t\tMinVersion: tls.VersionTLS12,')
-# Identify this experimental client and its actual platform.
+add_import(auth, 'companyprocess')
+# Identify this client and its actual platform.
 text = auth.read_text()
-text, count = re.subn(r'UserAgent\s*= "[^"]+"', 'UserAgent = "SplitVPN-CompanyExperiment/0.1 (macOS)"', text)
+text, count = re.subn(r'UserAgent\s*= "[^"]+"', 'UserAgent = "SplitVPN-Company/0.2"', text)
 if count != 1:
     raise RuntimeError('User-Agent 补丁上下文不匹配')
 auth.write_text(text)
-replace_once(auth, '"platform":   {"Linux"}', '"platform":   {"Mac"}')
-replace_once(auth, 'type Session struct {', 'type Session struct {\n\tpasswordChangeHandler PasswordChangeHandler\n\tpasswordChangeInfo passwordChangeData')
+replace_once(auth, '"platform":   {"Linux"}', '"platform":   {companyprocess.AuthPlatform()}')
+replace_once(auth, 'type Session struct {', 'type Session struct {\n\tcompanyPin string\n\tpasswordChangeHandler PasswordChangeHandler\n\tpasswordChangeInfo passwordChangeData')
 replace_once(auth, 'type LoginOptions struct {', 'type LoginOptions struct {\n\tPasswordChangeHandler PasswordChangeHandler')
 replace_once(auth, '\ts.challengeHandler = opts.ChallengeHandler', '\ts.passwordChangeHandler = opts.PasswordChangeHandler\n\ts.challengeHandler = opts.ChallengeHandler')
 replace_once(auth, '\t\tcase "auth/token":', '\t\tcase "auth/modifyPwd":\n\t\t\tstep, err = s.completePasswordChange(step)\n\t\tcase "auth/token":')
@@ -98,7 +99,12 @@ requests.write_text(text[:start] + segment.replace(before, after, 1) + text[end:
 # Mihomo TUN. Avoid allocating an unused second L3 data plane.
 client_source = source / 'client/atrust/client.go'
 replace_once(client_source, 'type SetupOptions struct {', 'type SetupOptions struct {\n\tSkipL3 bool // Native shared-TUN TCP mode; all other callers keep L3 setup.')
-replace_once(client_source, 'type Client struct {', 'type Client struct {\n\tcompanyTCPOnly bool')
+replace_once(client_source, 'type SessionOptions struct {', 'type SessionOptions struct {\n\tFingerprint string')
+replace_once(client_source, 'type ClientOptions struct {', 'type ClientOptions struct {\n\tContext context.Context')
+replace_once(client_source, 'lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())', 'parent := options.Context; if parent == nil { parent = context.Background() }; lifecycleCtx, lifecycleCancel := context.WithCancel(parent)')
+replace_once(client_source, 'type Client struct {', 'type Client struct {\n\tcompanyAuthSession *auth.Session\n\tcertificateFingerprint string\n\tcompanyTCPOnly bool')
+replace_once(client_source, '\t\tUsername:        options.Session.Username,', '\t\tcertificateFingerprint: options.Session.Fingerprint,\n\t\tUsername:        options.Session.Username,')
+replace_once(client_source, '\tsess := auth.NewSession(authServerHost, c.tlsKeyLogWriter, c.underlayDialer.DialContext)', '\tsess := auth.NewSession(authServerHost, c.tlsKeyLogWriter, c.underlayDialer.DialContext)\n\tif c.certificateFingerprint != \"\" { sess.SetCertificatePin(c.certificateFingerprint) }\n\tsess.SetLifecycleContext(c.lifecycleCtx)\n\tc.sessionMu.Lock(); c.companyAuthSession = sess; c.sessionMu.Unlock()')
 replace_once(client_source, '\tc.serverAddress = options.ServerAddress', '\tc.companyTCPOnly = options.SkipL3\n\tc.serverAddress = options.ServerAddress')
 text = client_source.read_text()
 start = text.index('\terr = c.getIP()')
@@ -124,6 +130,9 @@ replace_once(tcp, 'ProcessTrusted = "TRUSTED"', 'ProcessTrusted = "UNKNOWN"')
 # routing transaction. Never kill the process from a connection callback.
 replace_once(tcp, 'log.Fatalf("tcp tunnel: aTrust session is invalid (code %d): %s", response.Code, response.Message)',
              'return fmt.Errorf("aTrust session is invalid with code %d", response.Code)')
+replace_once(tcp, 'tunnelTLSConfig(c.tlsKeyLogWriter)', 'c.companyTLSConfig(tunnelTLSConfig(c.tlsKeyLogWriter))')
+session_source = source / 'client/atrust/session.go'
+replace_once(session_source, 'log.Fatalf("aTrust session maintenance failed: %v", err)', 'c.setSessionSID("", err)\n                return')
 
 l3 = source / 'client/atrust/l3tunnelconn.go'
 add_import(l3, 'companyprocess')
@@ -153,7 +162,7 @@ env = os.environ.copy()
 env.pop('GOFLAGS', None)
 env.pop('GOROOT', None)
 env.update(GOTOOLCHAIN='go' + DEPENDENCY['go_version'], GOWORK='off', GOCACHE=str(LOCAL / 'go-cache'), GOMODCACHE=str(LOCAL / 'go-modules'))
-paths = [auth, password, transport, requests, client_source, nodes, tcp, l3, *source.glob('client/atrust/company_*.go'), *source.glob('client/atrust/auth/company_*.go'), *source.glob('internal/company*/*.go'), *source.glob('cmd/company-account-helper/*.go')]
+paths = [session_source, auth, password, transport, requests, client_source, nodes, tcp, l3, *source.glob('client/atrust/company_*.go'), *source.glob('client/atrust/auth/company_*.go'), *source.glob('internal/company*/*.go'), *source.glob('cmd/company-account-helper/*.go')]
 run('gofmt', '-w', *map(str, paths))
 print('验证证书拦截，再构建独立连接内核。', flush=True)
 run('go', 'test', './internal/companycert', cwd=source, env=env)

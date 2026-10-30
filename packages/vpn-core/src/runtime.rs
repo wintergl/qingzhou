@@ -1,3 +1,13 @@
+mod chain_automatic;
+mod chain_failover;
+mod chain_history;
+mod chain_lifecycle;
+mod chain_presentation;
+mod chain_probe;
+mod chain_routine;
+mod chain_use;
+mod exit_risk;
+mod read_views;
 use crate::{
     background::RuntimeEnvironment,
     company::Company,
@@ -409,6 +419,50 @@ mod helper_upgrade_tests {
     }
 
     #[test]
+    fn automatic_checks_start_on_readiness_and_recheck_after_same_process_network_change() {
+        let (_root, mut core, _controller) = recovery_fixture();
+        core.network_recovery.applied(Some("fixture-path".into()));
+        core.sync_diagnostics();
+        assert_eq!(
+            core.diagnostics.due(Instant::now()),
+            Some(CheckKind::Connectivity)
+        );
+        let connection = core
+            .begin_diagnostic(CheckKind::Connectivity, false)
+            .unwrap();
+        assert_eq!(
+            core.diagnostics.due(Instant::now()),
+            Some(CheckKind::Websites)
+        );
+        let sites = core.begin_diagnostic(CheckKind::Websites, false).unwrap();
+        core.complete_diagnostic(&connection, Ok(json!({"connectivity":{"foreignOk":true}})))
+            .unwrap();
+        assert_eq!(
+            core.diagnostics.status()["connectivity"]["source"],
+            "automatic"
+        );
+
+        core.handle("native:network-changed", &json!({"available":true}))
+            .unwrap();
+        assert_eq!(core.diagnostics.status()["pausedReason"], "recovering");
+        assert!(!core.diagnostic_current(&sites.token));
+        assert!(
+            core.complete_diagnostic(&sites, Ok(json!({"old":true})))
+                .is_err()
+        );
+        core.network_recovery.applied(Some("fixture-path".into()));
+        core.sync_diagnostics();
+        assert_eq!(
+            core.diagnostics.due(Instant::now()),
+            Some(CheckKind::Connectivity)
+        );
+        assert_eq!(
+            core.diagnostics.status()["connectivity"]["staleResult"],
+            true
+        );
+    }
+
+    #[test]
     fn exhausted_repair_budget_does_not_disable_informational_periodic_checks() {
         let (_root, mut core, _controller) = recovery_fixture();
         core.network_recovery.applied(Some("fixture-path".into()));
@@ -445,6 +499,9 @@ mod helper_upgrade_tests {
             kind: "risk".into(),
             recommended: false,
             probe: controller.port,
+            select_probe: true,
+            via_static_exit: false,
+            current_exit_key: None,
             risk_key: String::new(),
             endpoint: None,
             token: core.diagnostic_token(),
@@ -668,7 +725,7 @@ pub struct Jobs {
     /// Set by the input reader, before the stop can acquire the writer lock.
     pub stop_requested: Arc<AtomicBool>,
     pub intent_epoch: AtomicU64,
-    pub read_views: Mutex<std::collections::HashMap<String, Value>>,
+    read_views: Mutex<std::collections::HashMap<String, read_views::CachedReadView>>,
     probe_gate: Arc<Mutex<()>>,
     background_pending: Mutex<bool>,
     background_wake: Condvar,
@@ -682,11 +739,19 @@ pub struct Jobs {
     pub risk_active: AtomicBool,
     pub speed_active: AtomicBool,
     pub udp_active: AtomicBool,
+    pub chain_active: AtomicBool,
+    pub chain_cancel: AtomicBool,
+    pub chain_sampling: AtomicBool,
+    pub chain_connect_active: AtomicBool,
+    pub chain_connect_cancel: AtomicBool,
+    pub chain_use_state: Mutex<Value>,
+    pub chain_use_cancelled: Mutex<std::collections::VecDeque<String>>,
+    pub chain_priority: Mutex<std::collections::VecDeque<String>>,
 }
 impl Jobs {
     pub fn invalidate_diagnostics(&self) {
         self.intent_epoch.fetch_add(1, Ordering::SeqCst);
-        self.cancel_all();
+        self.cancel_diagnostics();
         self.wake_background();
     }
     pub fn wake_background(&self) {
@@ -709,20 +774,38 @@ impl Jobs {
     }
     pub fn cancel(&self, kind: &str) {
         match kind {
+            "chain" => &self.chain_cancel,
             "risk" => &self.risk,
             "udp" => &self.udp,
             _ => &self.speed,
         }
         .store(true, Ordering::SeqCst);
     }
-    pub fn cancel_all(&self) {
-        for flag in [&self.speed, &self.risk, &self.udp] {
+    pub fn cancel_diagnostics(&self) {
+        for flag in [
+            &self.speed,
+            &self.risk,
+            &self.udp,
+            &self.chain_connect_cancel,
+        ] {
             flag.store(true, Ordering::SeqCst);
+        }
+    }
+    pub fn cancel_all(&self) {
+        self.cancel_diagnostics();
+        self.chain_cancel.store(true, Ordering::SeqCst);
+    }
+    fn requeue_chain_priority(&self, key: &str) {
+        if let Ok(mut queue) = self.chain_priority.lock() {
+            if !queue.iter().any(|id| id == key) {
+                queue.push_front(key.to_owned());
+            }
         }
     }
     pub fn cancelled(&self, kind: &str) -> bool {
         self.shutdown.load(Ordering::SeqCst)
             || match kind {
+                "chain" => &self.chain_cancel,
                 "risk" => &self.risk,
                 "udp" => &self.udp,
                 _ => &self.speed,
@@ -985,7 +1068,7 @@ impl Engine {
     }
     /// Discard sockets bound to the departed path. Company sockets have their
     /// own tunnel recovery and are never closed by this personal VPN action.
-    fn close_departed_path_connections(&self, stop: &AtomicBool) -> Result<()> {
+    fn close_departed_path_connections(&self, stop: &AtomicBool, proxy_only: bool) -> Result<()> {
         let deadline = Instant::now() + Duration::from_secs(3);
         let connections = self.api("GET", "/connections", None)?;
         for connection in connections["connections"].as_array().into_iter().flatten() {
@@ -1003,9 +1086,13 @@ impl Engine {
             }) {
                 continue;
             }
-            if !chains
-                .is_some_and(|items| items.iter().any(|name| name == "VPN" || name == "DIRECT"))
-            {
+            if !chains.is_some_and(|items| {
+                items.iter().any(|name| {
+                    name == "VPN"
+                        || name == crate::static_exit::EXIT
+                        || (!proxy_only && name == "DIRECT")
+                })
+            }) {
                 continue;
             }
             if let Some(id) = connection["id"].as_str().filter(|id| !id.is_empty()) {
@@ -1327,6 +1414,22 @@ pub struct Core {
     pub jobs: Arc<Jobs>,
     started: String,
     risk_key: String,
+    exit_credential: Value,
+    exit_probe: u16,
+    exit_scan_probe: u16,
+    chain_scan: Value,
+    chain_auto_attempt: Option<Instant>,
+    chain_failover_attempt: Option<Instant>,
+    pub chain_auto_error: bool,
+    chain_auto_paused_in_memory: bool,
+    chain_network_changed_at: Option<Instant>,
+    chain_probe: Option<Arc<Mutex<chain_probe::ChainProbe>>>,
+    chain_token: Option<DiagnosticToken>,
+    chain_manifest: Value,
+    chain_settings: Value,
+    chain_cache_key: Value,
+    chain_cache_checked: bool,
+    chain_network: Mutex<chain_lifecycle::NetworkCache>,
     samples: Vec<Value>,
     live_proxies: Option<Value>,
     traffic_snapshot: Value,
@@ -1342,6 +1445,10 @@ pub struct Core {
     diagnostics: Diagnostics,
     diagnostics_context: Option<DiagnosticToken>,
     last_diagnostics_state: String,
+    view_revision: u64,
+    last_nodes_state: Value,
+    last_exit_risk_state: Value,
+    current_exit_risk: Option<(DiagnosticToken, Value)>,
     connection_health: ConnectionHealth,
     wechat_route: Option<&'static str>,
     pending_wechat: Option<String>,
@@ -1379,6 +1486,22 @@ impl Core {
             jobs,
             started: now(),
             risk_key: String::new(),
+            exit_credential: Value::Null,
+            exit_probe: 0,
+            exit_scan_probe: 0,
+            chain_scan: crate::chain_scan::idle(),
+            chain_auto_attempt: None,
+            chain_failover_attempt: None,
+            chain_auto_error: false,
+            chain_auto_paused_in_memory: false,
+            chain_network_changed_at: None,
+            chain_probe: None,
+            chain_token: None,
+            chain_manifest: Value::Null,
+            chain_settings: Value::Null,
+            chain_cache_key: Value::Null,
+            chain_cache_checked: false,
+            chain_network: Mutex::new(chain_lifecycle::NetworkCache::default()),
             samples: Vec::new(),
             live_proxies: None,
             traffic_snapshot: Value::Null,
@@ -1394,6 +1517,10 @@ impl Core {
             diagnostics: Diagnostics::default(),
             diagnostics_context: None,
             last_diagnostics_state: String::new(),
+            view_revision: 0,
+            last_nodes_state: Value::Null,
+            last_exit_risk_state: Value::Null,
+            current_exit_risk: None,
             connection_health: ConnectionHealth::default(),
             wechat_route: None,
             pending_wechat: None,
@@ -1409,9 +1536,25 @@ impl Core {
             recovery_authorized: None,
         };
         c.recover_transaction()?;
+        c.load_chain_cache();
+        chain_history::migrate(&c.engine.store, &c.chain_scan, &c.chain_cache_key)?;
         Ok(c)
     }
     pub fn shutdown(&mut self) {
+        if self.chain_scan["running"] == true {
+            self.chain_scan["running"] = json!(false);
+            self.chain_scan["testing"] = json!(false);
+            self.chain_scan["cancelled"] = json!(true);
+            self.chain_scan["waitingReason"] = Value::Null;
+            self.chain_scan["stopReason"] = json!("shutdown");
+            self.chain_scan["finishedAt"] = json!(now());
+            let _ = self.save_chain_cache();
+        }
+        if let Some(probe) = self.chain_probe.take() {
+            if let Ok(mut probe) = probe.lock() {
+                probe.stop();
+            }
+        }
         if let Err(error) = self.company.remove(&mut self.engine) {
             self.log("warn", &format!("私有网络分流退出恢复未完成：{error}"));
         }
@@ -1446,12 +1589,13 @@ impl Core {
         status
     }
     fn publish_runtime_status(&mut self) {
-        let state = self.runtime_status();
+        let mut state = self.runtime_status();
         let serialized = state.to_string();
         if serialized != self.last_core_state {
-            (self.events)("vpn:status", state);
             self.last_core_state = serialized;
             self.publish_read_views();
+            state["viewRevision"] = json!(self.view_revision);
+            (self.events)("vpn:status", state);
         }
     }
     /// Detect an upgrade before automatic connection or any background reload.
@@ -1503,10 +1647,41 @@ impl Core {
                 .is_some_and(|p| p as u32 != std::process::id() && platform::pid_alive(p as u32)),
             "另一个 Rust 后台仍在应用配置，请先关闭旧窗口。"
         );
+        if let Some(was_running) = j["chainUseWasRunning"].as_bool() {
+            let expected_pid = if was_running {
+                &j["chainUseOriginalPid"]
+            } else {
+                &j["chainUseStartedPid"]
+            };
+            if self.engine.pid.is_some()
+                && (self.engine.protected()
+                    || expected_pid.as_u64() != self.engine.pid.map(u64::from))
+            {
+                self.engine
+                    .store
+                    .set_recovery(true, Some("chain-use-interrupted"))?;
+                self.engine.last_error = Some("上次线路连接已中断，请检查实际状态。".into());
+                self.network_recovery.failed(
+                    "上次线路连接已中断，请检查实际状态。".into(),
+                    Instant::now(),
+                );
+                self.log(
+                    "warn",
+                    "上次线路连接已中断，运行身份尚未确认，恢复记录已保留。",
+                );
+                return Ok(());
+            }
+            if !was_running && self.engine.pid.is_some() {
+                self.stop_runtime()?;
+            }
+        }
         self.restore_transaction(&j)?;
         if self.engine.pid.is_some() {
             let base = fs::read_to_string(self.engine.store.path("mihomo/config.yaml"))?;
             self.company.reload_base(&mut self.engine, &base)?;
+            if j["chainUseWasRunning"] == true {
+                self.engine.restore_selections_checked(&j["selections"])?;
+            }
         }
         self.finish_transaction();
         self.log("info", "已恢复中断前的配置与订阅指针。");
@@ -1594,12 +1769,343 @@ impl Core {
         result
     }
     fn selected_udp(&self, settings: &Value) -> Result<bool> {
+        if settings["staticExit"]["enabled"] == true {
+            return Ok(false);
+        }
         Ok(settings["selectedProxy"] == "DIRECT"
             || self.nodes()?.iter().any(|n| {
                 n["name"] == settings["selectedProxy"]
                     && n["runtimeUdpSupported"] == true
                     && !n["identityAmbiguous"].as_bool().unwrap_or(false)
             }))
+    }
+    fn apply_static_exit(&mut self, config: &mut Value, settings: &Value) -> Result<()> {
+        if settings["staticExit"]["enabled"] != true {
+            return Ok(());
+        }
+        ensure!(
+            !subscription::provider_nodes(&self.engine.store)?
+                .iter()
+                .any(|n| [
+                    crate::static_exit::EXIT,
+                    crate::static_exit::SCAN_EXIT,
+                    crate::static_exit::SCAN_FRONT
+                ]
+                .iter()
+                .any(|name| n["name"] == *name)),
+            "订阅节点名称与静态出口保留名称冲突。"
+        );
+        if self.exit_probe == 0 {
+            self.exit_probe = available_port(0)?;
+        }
+        crate::static_exit::apply(config, settings, &self.exit_credential, self.exit_probe)?;
+        if self.exit_scan_probe == 0 {
+            self.exit_scan_probe = available_port(0)?;
+        }
+        crate::static_exit::add_scan(config, self.exit_scan_probe)
+    }
+    fn chain_scan_port(&self) -> Result<u16> {
+        if self.engine.isolated && std::env::var_os("SPLITVPN_TEST_CHAIN_PROXY_URL").is_some() {
+            return url::Url::parse(&network::fixture_url("SPLITVPN_TEST_CHAIN_PROXY_URL")?)?
+                .port()
+                .context("隔离代理端口无效。");
+        }
+        let loaded = config::parse(&fs::read_to_string(
+            self.engine.store.path("mihomo/config.yaml"),
+        )?)?;
+        loaded["listeners"]
+            .as_array()
+            .and_then(|a| {
+                a.iter()
+                    .find(|l| l["name"] == crate::static_exit::SCAN_LISTENER)
+            })
+            .and_then(|l| l["port"].as_u64())
+            .and_then(|p| u16::try_from(p).ok())
+            .context("请重新连接 VPN，以启用链路扫描入口。")
+    }
+    fn chain_context(&self) -> Result<Value> {
+        let settings = self.engine.store.settings()?;
+        let mut value = json!({});
+        for key in [
+            "staticExit",
+            "lanDirect",
+            "tailscaleDirect",
+            "ipv6",
+            "geoFallback",
+            "unknownTraffic",
+            "vpnDomainRules",
+            "directDomainRules",
+            "specialCompatibilityRules",
+        ] {
+            value[key] = settings[key].clone();
+        }
+        // Business on/off does not change the path measured by the scanner.
+        value["staticExit"]["enabled"] = json!(false);
+        Ok(value)
+    }
+    fn chain_environment_valid(&self) -> bool {
+        !self.jobs.shutdown.load(Ordering::SeqCst)
+            && self
+                .chain_cache_identity()
+                .is_ok_and(|key| key == self.chain_cache_key)
+    }
+
+    fn chain_cache_identity(&self) -> Result<Value> {
+        let digest = |v: &Value| crate::storage::sha256(&serde_json::to_vec(v).unwrap_or_default());
+        let network = self.chain_network_signature()?;
+        Ok(
+            json!({"settings":digest(&self.chain_context()?),"manifest":digest(&self.chain_manifest_identity()?),"network":digest(&network)}),
+        )
+    }
+    fn save_chain_cache(&self) -> Result<()> {
+        self.engine.store.write(
+            "runtime-state/chain-scan-cache.json",
+            &json!({"schemaVersion":1,"key":self.chain_cache_key,"state":self.chain_scan}),
+        )
+    }
+    fn load_chain_cache(&mut self) {
+        let Ok(cache) = self
+            .engine
+            .store
+            .read("runtime-state/chain-scan-cache.json", Value::Null)
+        else {
+            return;
+        };
+        if cache["schemaVersion"] != 1 || !cache["state"].is_object() {
+            return;
+        }
+        let Some(rows) = cache["state"]["results"].as_array() else {
+            return;
+        };
+        if rows.len() > 5000
+            || !rows.iter().all(|r| {
+                r.is_object()
+                    && r["identityKey"].is_string()
+                    && r["providerRevision"].is_string()
+                    && r["testedAt"].is_string()
+            })
+        {
+            return;
+        }
+        self.chain_cache_key = cache["key"].clone();
+        self.chain_scan = cache["state"].clone();
+        self.chain_scan["running"] = json!(false);
+        self.chain_scan["testing"] = json!(false);
+        self.chain_scan["currentNode"] = Value::Null;
+        self.chain_scan["nextTestAt"] = Value::Null;
+        self.chain_scan["cancelled"] = json!(self.chain_scan["cacheUsable"] != true);
+    }
+    fn restore_chain_cache_context(&mut self) {
+        if self.chain_token.is_none() && !self.chain_cache_checked {
+            self.chain_cache_checked = true;
+            if self
+                .chain_cache_identity()
+                .is_ok_and(|k| k == self.chain_cache_key)
+            {
+                if let (Ok(manifest), Ok(settings)) =
+                    (self.chain_manifest_identity(), self.chain_context())
+                {
+                    self.chain_manifest = manifest;
+                    self.chain_settings = settings;
+                    self.chain_token = Some(self.diagnostic_token());
+                }
+            }
+        }
+    }
+    fn chain_scan_state(&self, strategy: &str) -> Result<Value> {
+        let key = self.chain_cache_identity().unwrap_or(Value::Null);
+        let inventory = subscription::provider_nodes(&self.engine.store).unwrap_or_default();
+        let mut source = self.chain_scan.clone();
+        for row in source["results"].as_array_mut().into_iter().flatten() {
+            if let Some(node) = inventory
+                .iter()
+                .find(|n| n["identityKey"] == row["identityKey"])
+            {
+                row["subscriptionId"] = node["subscriptionId"].clone();
+                row["subscriptionName"] = node["subscriptionName"].clone();
+            }
+            let context = row
+                .get("measurementContext")
+                .unwrap_or(&self.chain_cache_key);
+            let same_settings =
+                !key["settings"].is_null() && context["settings"] == key["settings"];
+            let node_matches = inventory.iter().any(|n| {
+                n["identityAmbiguous"] != true
+                    && n["identityKey"] == row["identityKey"]
+                    && n["providerRevision"] == row["providerRevision"]
+            });
+            let other_environment = !same_settings
+                || !node_matches
+                || key["network"].is_null()
+                || context["network"] != key["network"];
+            row["otherEnvironment"] = json!(other_environment);
+            row["connectionEligible"] = json!(
+                same_settings
+                    && node_matches
+                    && row["status"] == "available"
+                    && self.chain_scan["cacheUsable"] == true
+                    && self.chain_scan["error"].is_null()
+            );
+        }
+        let mut state = crate::chain_scan::ranked(&source, strategy)?;
+        state["leaders"] = json!({
+            "balanced":crate::chain_scan::ranked(&source, "balanced")?["recommendedIdentityKey"],
+            "download":crate::chain_scan::ranked(&source, "download")?["recommendedIdentityKey"],
+            "latency":crate::chain_scan::ranked(&source, "latency")?["recommendedIdentityKey"]
+        });
+        // Age affects confidence; a different environment affects applicability.
+        state["stale"] = json!(!self.chain_environment_valid());
+        state["canUseCachedResults"] = json!(
+            state["stale"] == false && state["cacheUsable"] == true && state["error"].is_null()
+        );
+        state["workerActive"] = json!(self.jobs.chain_active.load(Ordering::SeqCst));
+        state["queuedIdentityKeys"] = json!(
+            self.jobs
+                .chain_priority
+                .lock()
+                .map(|q| q.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+        state["autoRefresh"] = self.chain_automatic_state()?;
+        state["suggestedRefreshSeconds"] = json!(crate::chain_scan::MAX_AGE_SECONDS);
+        state["validitySeconds"] = Value::Null;
+        Ok(state)
+    }
+    fn prepare_chain_connect(&self, p: &Value) -> Result<ChainConnect> {
+        allowed_keys(p, &["scanId", "identityKey", "strategy"])?;
+        self.assert_company_owner()?;
+        ensure!(
+            !self.engine.protected(),
+            "请在当前轻舟连接 VPN 后再应用链路。"
+        );
+        ensure!(
+            !self.jobs.chain_connect_active.load(Ordering::SeqCst),
+            "连接操作正在进行。"
+        );
+        ensure!(
+            self.engine.pid.is_some()
+                && self.engine.store.settings()?["staticExit"]["enabled"] == true,
+            "测试结果已保存；请先连接 VPN 并启用 ISP，再应用推荐链路。"
+        );
+        let (node, expected) = self.chain_connection_target(p)?;
+        Ok(ChainConnect {
+            node,
+            environment: self.chain_cache_identity()?,
+            port: self.chain_scan_port()?,
+            expected,
+            token: self.diagnostic_token(),
+            jobs: self.jobs.clone(),
+            io: self.engine.io(),
+            ip_url: chain_targets(self.engine.isolated)?.ip,
+            latency_url: chain_targets(self.engine.isolated)?.latency,
+        })
+    }
+    fn chain_connection_target(&self, p: &Value) -> Result<(Value, String)> {
+        let strategy = p["strategy"].as_str().unwrap_or("balanced");
+        let state = self.chain_scan_state(strategy)?;
+        ensure!(
+            state["id"] == p["scanId"]
+                && (state["cancelled"] == false || state["cacheUsable"] == true)
+                && (!self.jobs.chain_active.load(Ordering::SeqCst) || state["cacheUsable"] == true)
+                && state["error"].is_null(),
+            "扫描结果已失效，请重新扫描。"
+        );
+        let key = p
+            .get("identityKey")
+            .unwrap_or(&state["recommendedIdentityKey"]);
+        let result = state["results"]
+            .as_array()
+            .and_then(|a| {
+                a.iter().find(|r| {
+                    r["identityKey"] == *key
+                        && r["status"] == "available"
+                        && r["connectionEligible"] == true
+                        && (strategy != "balanced" || r["balancedScore"].is_number())
+                })
+            })
+            .context("没有完整通过测试的链路，请重试扫描。")?;
+        let node = self.node_identity(result["identityKey"].as_str().context("节点标识无效。")?)?;
+        ensure!(
+            node["providerRevision"] == result["providerRevision"],
+            "节点订阅已更新，请重新扫描。"
+        );
+        Ok((
+            node,
+            result["exitIp"]
+                .as_str()
+                .context("出口尚未确认。")?
+                .to_owned(),
+        ))
+    }
+    fn set_static_exit_enabled(&mut self, p: &Value) -> Result<Value> {
+        allowed_keys(p, &["enabled"])?;
+        let enabled = p["enabled"].as_bool().context("ISP 出口开关需要布尔值。")?;
+        let settings = self.engine.store.settings()?;
+        let mut exit = settings["staticExit"].clone();
+        exit["enabled"] = json!(enabled);
+        crate::static_exit::validate(&exit)?;
+        if enabled {
+            ensure!(
+                settings["selectedProxy"] != "DIRECT",
+                "请先选择一个机场节点，再启用 ISP 出口。"
+            );
+            if !exit["username"].as_str().unwrap_or("").is_empty() {
+                ensure!(
+                    crate::static_exit::credential_matches(&exit, &self.exit_credential)
+                        && self.exit_credential["password"]
+                            .as_str()
+                            .is_some_and(|p| !p.is_empty()),
+                    "ISP 密码尚未加载，请打开 ISP 配置重新保存。"
+                );
+            }
+        }
+        self.revision += 1;
+        self.settings_patch(&json!({"staticExit":exit}), true)
+    }
+    fn configure_static_exit(&mut self, p: &Value) -> Result<Value> {
+        allowed_keys(p, &["configuration", "password"])?;
+        crate::static_exit::validate(&p["configuration"])?;
+        let password = p["password"].as_str().context("静态出口密码格式无效。")?;
+        ensure!(password.len() <= 4096, "静态出口密码过长。");
+        self.revision += 1;
+        let previous = self.exit_credential.clone();
+        self.exit_credential = p.clone();
+        let result = self.settings_patch(&json!({"staticExit":p["configuration"]}), true);
+        if result.is_err() {
+            self.exit_credential = previous;
+        }
+        result
+    }
+    fn static_exit_port(&self) -> Result<u16> {
+        if self.exit_probe != 0 {
+            return Ok(self.exit_probe);
+        }
+        let loaded = config::parse(&fs::read_to_string(
+            self.engine.store.path("mihomo/config.yaml"),
+        )?)?;
+        loaded["listeners"]
+            .as_array()
+            .and_then(|a| a.iter().find(|l| l["name"] == crate::static_exit::LISTENER))
+            .and_then(|l| l["port"].as_u64())
+            .and_then(|p| u16::try_from(p).ok())
+            .context("当前运行版本没有静态出口检测入口，请重新连接。")
+    }
+    fn begin_static_exit_check(&self) -> Result<StaticExitCheck> {
+        ensure!(!self.engine.isolated, "隔离测试不访问真实出口。");
+        ensure!(self.engine.pid.is_some(), "请先连接 VPN，再测试静态出口。");
+        let s = self.engine.store.settings()?;
+        ensure!(
+            s["staticExit"]["enabled"] == true,
+            "请先保存并启用静态出口。"
+        );
+        Ok(StaticExitCheck {
+            port: self.static_exit_port()?,
+            expected: s["staticExit"]["expectedIp"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned(),
+            token: self.diagnostic_token(),
+        })
     }
     fn apply_config(&mut self, settings: &Value) -> Result<()> {
         if self.engine.pid.is_none() {
@@ -1629,6 +2135,7 @@ impl Core {
             self.engine.probe = available_port(0)?;
         }
         config::add_probe(&mut c, self.engine.probe);
+        self.apply_static_exit(&mut c, settings)?;
         // Company compilation uses the retained base TUN setting; isolation
         // tests for company routing call its compiler without starting a TUN.
         let text = config::yaml(&c)?;
@@ -1680,6 +2187,10 @@ impl Core {
             if apply {
                 c.ensure_user_helper()?;
                 c.apply_config(&s)?;
+                if p.contains_key("staticExit") && c.engine.pid.is_some() {
+                    c.engine
+                        .close_departed_path_connections(&c.jobs.stop_requested, true)?;
+                }
             }
             c.engine.store.write("settings.json", &s)?;
             Ok(s)
@@ -1714,7 +2225,24 @@ impl Core {
     fn groups(&self) -> Result<Value> {
         let settings = self.engine.store.settings()?;
         let nodes = self.nodes()?;
+        self.groups_from_nodes(&settings, &nodes)
+    }
+    fn groups_from_nodes(&self, settings: &Value, nodes: &[Value]) -> Result<Value> {
         let mut groups = Vec::new();
+        let mut identities = std::collections::HashMap::new();
+        let mut names = std::collections::HashMap::new();
+        let mut subscription_names = std::collections::HashMap::new();
+        for node in nodes {
+            if let Some(key) = node["identityKey"].as_str() {
+                identities.entry(key).or_insert(node);
+            }
+            if let Some(name) = node["name"].as_str() {
+                names.entry(name).or_insert(node);
+                if let Some(id) = node["subscriptionId"].as_str() {
+                    subscription_names.entry((id, name)).or_insert(node);
+                }
+            }
+        }
         for g in settings["nodeGroups"].as_array().unwrap() {
             let subscription_id = g["id"]
                 .as_str()
@@ -1730,10 +2258,13 @@ impl Core {
                     .collect()
             };
             let members = refs.iter().map(|r| {
-                let node = nodes.iter().find(|n| match r["identityKey"].as_str() {
-                    Some(key) => n["identityKey"] == key,
-                    None => n["name"] == r["lastKnownName"] && subscription_id.is_none_or(|id| n["subscriptionId"] == id),
-                });
+                let node = match r["identityKey"].as_str() {
+                    Some(key) => identities.get(key).copied(),
+                    None => r["lastKnownName"].as_str().and_then(|name| match subscription_id {
+                        Some(id) => subscription_names.get(&(id, name)).copied(),
+                        None => names.get(name).copied(),
+                    }),
+                };
                 let issue = if node.is_none() { Some("节点已移除或订阅停用") } else if node.is_some_and(|n| n["identityAmbiguous"] == true) { Some("同名节点或内核名称冲突") } else { None };
                 json!({"identityKey":r["identityKey"].as_str().or_else(|| node.and_then(|n| n["identityKey"].as_str())),"lastKnownName":r["lastKnownName"],"issue":issue,"available":node.map(|n|n["available"].clone()),"delay":node.map(|n|n["delay"].clone()),"current":node.is_some_and(|n| n["selected"]==true)})
             }).collect::<Vec<_>>();
@@ -1756,11 +2287,50 @@ impl Core {
             .clone())
     }
     fn bootstrap(&mut self) -> Result<Value> {
-        Ok(
-            json!({"status":self.status()?,"nodes":self.nodes()?,"groups":self.groups()?,"risks":self.risks()?,"traffic":self.traffic(),"legacyOwnerRunning":!self.engine.isolated&&platform::legacy_owner(),"previewOnly":false,"ownsRuntime":self.engine.pid.is_some()&&self.engine.pid==self.engine.owned,"companyRouting":self.company.state(),"dataDir":self.engine.store.root,"diagnostics":self.diagnostics.status(),"core":{"implementation":"rust","protocolVersion":1,"version":env!("CARGO_PKG_VERSION")}}),
-        )
+        let status = self.status()?;
+        let nodes = self.nodes()?;
+        let groups = self.groups_from_nodes(&status["settings"], &nodes)?;
+        let risks = self.risks()?;
+        let traffic = self.traffic();
+        Ok(self.bootstrap_view(status, json!(nodes), groups, risks, traffic))
     }
     pub fn handle(&mut self, channel: &str, p: &Value) -> Result<Value> {
+        if self
+            .jobs
+            .chain_use_state
+            .lock()
+            .is_ok_and(|state| state["finished"] == false)
+            && !matches!(
+                channel,
+                "core:capabilities"
+                    | "native:bootstrap"
+                    | "native:network-changed"
+                    | "native:runtime-environment"
+                    | "vpn:get-status"
+                    | "vpn:stop"
+                    | "diagnostics:get-state"
+                    | "chain-scan:get"
+                    | "chain-scan:history"
+                    | "nodes:list"
+                    | "node-groups:list"
+                    | "subscription:get-status"
+                    | "traffic:get-monitor"
+                    | "traffic:get-snapshot"
+                    | "nodes:get-risk-cache"
+                    | "ipdata:get-status"
+                    | "logs:get"
+                    | "logs:export-redacted"
+                    | "routing:get-state"
+                    | "routing:diagnose"
+                    | "routing:normalize-rule"
+                    | "native:company-context"
+                    | "native:risk-key"
+                    | "static-exit:needs-credential"
+                    | "runtime:get-recovery-state"
+            )
+        {
+            bail!("正在使用所选线路，请等待或取消当前操作。");
+        }
         if matches!(
             channel,
             "native:group-connect" | "native:group-disconnect" | "node-groups:select"
@@ -1787,6 +2357,8 @@ impl Core {
                 | "native:runtime-environment"
                 | "vpn:get-status"
                 | "diagnostics:get-state"
+                | "chain-scan:get"
+                | "chain-scan:history"
                 | "nodes:list"
                 | "node-groups:list"
                 | "subscription:get-status"
@@ -1821,13 +2393,131 @@ impl Core {
             "core:capabilities" => Ok(
                 json!({"implementation":"rust","protocolVersion":1,"version":env!("CARGO_PKG_VERSION"),"nodeRuntimeRequired":false,"platform":std::env::consts::OS,"arch":std::env::consts::ARCH}),
             ),
+            "chain-scan:history" => chain_history::page(
+                &self.engine.store,
+                p,
+                &self.chain_cache_identity().unwrap_or(Value::Null),
+            ),
+            "chain-scan:get" => {
+                allowed_keys(p, &["strategy", "subscriptionId"])?;
+                self.restore_chain_cache_context();
+                let subscription_id = p
+                    .get("subscriptionId")
+                    .map(|v| {
+                        v.as_str()
+                            .filter(|id| !id.is_empty())
+                            .context("请选择有效订阅。")
+                    })
+                    .transpose()?;
+                self.chain_scan_view(
+                    p["strategy"].as_str().unwrap_or("balanced"),
+                    subscription_id,
+                )
+            }
+            "chain-scan:prioritize" => {
+                allowed_keys(p, &["identityKey"])?;
+                ensure!(
+                    self.chain_scan["running"] == true
+                        && self.jobs.chain_active.load(Ordering::SeqCst)
+                        && !self.jobs.cancelled("chain"),
+                    "请先开始测试，或在停止后单独测试这条线路。"
+                );
+                ensure!(
+                    self.chain_configuration_current(),
+                    "配置已变化，请重新开始测试。"
+                );
+                let key = string(p, "identityKey")?;
+                ensure!(
+                    self.chain_scan["candidateIdentityKeys"]
+                        .as_array()
+                        .is_some_and(|keys| keys.contains(&json!(key))),
+                    "这条线路不在当前测试范围内，请暂停后重新开始。"
+                );
+                let node = self.node_identity(key)?;
+                ensure!(
+                    node["identityAmbiguous"] == false,
+                    "同名冲突线路暂不能单独重测。"
+                );
+                if self.chain_scan["testing"] == true
+                    && self.chain_scan["currentNode"] == node["name"]
+                {
+                    return Ok(json!({"alreadyTesting":true,"queued":false}));
+                }
+                ensure!(
+                    self.chain_scan["mode"] == "continuous"
+                        || !self.chain_scan["results"].as_array().is_some_and(|rows| {
+                            rows.iter().any(|row| row["identityKey"] == key)
+                        }),
+                    "单轮比较中只能优先测试尚未采样的线路；已测线路可在本轮结束后重测。"
+                );
+                let mut queue = self
+                    .jobs
+                    .chain_priority
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("重测队列不可用。"))?;
+                if !queue.iter().any(|id| id == key) {
+                    ensure!(queue.len() < 32, "优先重测队列已满，请稍后再试。");
+                    queue.push_back(key.to_owned());
+                }
+                Ok(json!({"queued":true,"alreadyTesting":false}))
+            }
+            "chain-scan:auto-configure" => self.configure_chain_automatic(p),
+            "chain-scan:cancel" => {
+                self.jobs.chain_cancel.store(true, Ordering::SeqCst);
+                self.pause_chain_automatic()?;
+                Ok(json!(true))
+            }
+            "static-exit:needs-credential" => {
+                let s = self.engine.store.settings()?;
+                Ok(json!(
+                    s["staticExit"]["enabled"] == true
+                        && !s["staticExit"]["username"]
+                            .as_str()
+                            .unwrap_or("")
+                            .is_empty()
+                        && !crate::static_exit::credential_matches(
+                            &s["staticExit"],
+                            &self.exit_credential
+                        )
+                ))
+            }
+            "static-exit:parse" => crate::static_exit::parse_line(string(p, "line")?),
+            "static-exit:configure" => self.configure_static_exit(p),
+            "static-exit:set-enabled" => self.set_static_exit_enabled(p),
+            "static-exit:credential" => {
+                allowed_keys(p, &["configuration", "password"])?;
+                crate::static_exit::validate(&p["configuration"])?;
+                ensure!(
+                    p["password"].as_str().is_some_and(|s| s.len() <= 4096),
+                    "静态出口密码格式无效。"
+                );
+                self.exit_credential = p.clone();
+                Ok(json!({"loaded":true}))
+            }
+            "static-exit:test" => self.begin_static_exit_check()?.measure(),
             "native:bootstrap" => self.bootstrap(),
             "native:startup-connect" => self.startup_connect(),
             "native:runtime-environment" => {
-                allowed_keys(p, &["sleeping", "lowPower", "networkEvents", "visible"])?;
-                for key in ["sleeping", "lowPower", "networkEvents", "visible"] {
+                allowed_keys(
+                    p,
+                    &[
+                        "sleeping",
+                        "lowPower",
+                        "onBattery",
+                        "networkEvents",
+                        "visible",
+                    ],
+                )?;
+                for key in [
+                    "sleeping",
+                    "lowPower",
+                    "onBattery",
+                    "networkEvents",
+                    "visible",
+                ] {
                     ensure!(
-                        p.get(key).is_none_or(Value::is_boolean),
+                        p.get(key)
+                            .is_none_or(|v| v.is_boolean() || (key == "onBattery" && v.is_null())),
                         "运行环境参数需要是布尔值。"
                     );
                 }
@@ -1844,11 +2534,18 @@ impl Core {
                 if let Some(value) = p["lowPower"].as_bool() {
                     self.environment.low_power = value;
                 }
+                if p.get("onBattery").is_some() {
+                    self.environment.on_battery = p["onBattery"].as_bool();
+                }
                 if let Some(value) = p["networkEvents"].as_bool() {
                     self.environment.network_events = value;
                 }
                 if was_sleeping != self.environment.sleeping {
+                    self.invalidate_chain_network();
                     self.jobs.invalidate_diagnostics();
+                    if was_sleeping {
+                        self.chain_network_changed_at = Some(Instant::now());
+                    }
                 }
                 if was_sleeping && !self.environment.sleeping && self.wants_running {
                     self.network_recovery.changed_for(None, "wake");
@@ -1859,13 +2556,16 @@ impl Core {
                 Ok(json!(true))
             }
             "native:network-changed" => {
+                self.observe_chain_path(p["available"].as_bool());
+                self.chain_network_changed_at = Some(Instant::now());
+                self.jobs.wake_background();
                 if self.wants_running && !self.engine.protected() {
                     self.path_health.invalidate();
                     self.live_proxies = None;
                     self.pending_wechat = None;
                     self.network_recovery.changed(p["available"].as_bool());
                     self.last_network_tick = None;
-                    self.jobs.cancel_all();
+                    self.jobs.invalidate_diagnostics();
                     self.publish_runtime_status();
                     self.jobs.wake_background();
                 }
@@ -2010,7 +2710,7 @@ impl Core {
                 self.network_recovery.changed_for(None, "manual-retry");
                 self.wants_running = true;
                 self.last_network_tick = None;
-                self.jobs.cancel_all();
+                self.jobs.invalidate_diagnostics();
                 self.jobs.wake_background();
                 self.publish_runtime_status();
                 Ok(self.runtime_status())
@@ -2065,8 +2765,9 @@ impl Core {
                 self.speed(node["name"].as_str().unwrap(), true)
             }
             "nodes:check-current-risk" => {
-                let s = self.engine.store.settings()?;
-                self.risk(s["selectedProxy"].as_str().unwrap())
+                let plan = self.prepare_current_exit_risk()?;
+                let result = plan.measure()?;
+                self.finish_node_diagnostic(&plan, result)
             }
             "nodes:check-risk" => self.risk(string(p, "nodeName")?),
             "nodes:get-risk-cache" => self.risks(),
@@ -2688,9 +3389,13 @@ impl Core {
             json!({"name":"DIRECT","identityKey":null})
         };
         let name = node["name"].as_str().unwrap().to_owned();
+        ensure!(
+            name != "DIRECT" || self.engine.store.settings()?["staticExit"]["enabled"] != true,
+            "请先关闭静态出口，再选择直连。"
+        );
         self.ensure_user_helper()?;
         self.revision += 1;
-        self.transaction(|c| {
+        let result = self.transaction(|c| {
             let mut s = c.engine.store.settings()?;
             let before = if c.engine.pid.is_some() {
                 c.engine.selections()?["VPN"]
@@ -2709,10 +3414,25 @@ impl Core {
                     let _ = c.engine.select(&before);
                     return Err(error);
                 }
+                if p["rebuildProxyConnections"] == true {
+                    c.engine
+                        .close_departed_path_connections(&c.jobs.stop_requested, true)?;
+                }
             }
             c.engine.store.write("settings.json", &s)?;
             Ok(s)
-        })
+        })?;
+        if let Some(proxies) = self.live_proxies.as_mut() {
+            proxies["proxies"]["VPN"]["now"] = json!(name);
+        }
+        if self.chain_scan["id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+        {
+            self.refresh_maintenance_candidates(false);
+            let _ = self.save_chain_cache();
+        }
+        Ok(result)
     }
     fn startup_connect(&mut self) -> Result<Value> {
         let helper = (!self.engine.isolated && cfg!(target_os = "macos"))
@@ -2875,6 +3595,7 @@ impl Core {
             cfg["rules"] = json!(["MATCH,DIRECT"]);
         } else {
             config::add_probe(&mut cfg, self.engine.probe);
+            self.apply_static_exit(&mut cfg, &s)?;
         }
         atomic_write(
             &self.engine.store.path("mihomo/providers/vpn-domains.yaml"),
@@ -2952,7 +3673,7 @@ impl Core {
                         rates = json!({"upload":up.saturating_sub(a) as f64/secs,"download":down.saturating_sub(b) as f64/secs});
                     }
                     self.last_totals = Some((up, down, Instant::now()));
-                    let connections=v["connections"].as_array().map(|a|a.iter().map(|c|json!({"id":c["id"].as_str().unwrap_or(""),"host":c["metadata"]["host"].as_str().unwrap_or(""),"network":c["metadata"]["network"].as_str().unwrap_or(""),"type":c["metadata"]["type"].as_str().unwrap_or(""),"rule":c["rule"].as_str().unwrap_or(""),"rulePayload":c["rulePayload"].as_str().unwrap_or(""),"chains":c["chains"].as_array().cloned().unwrap_or_default(),"upload":c["upload"].as_u64().unwrap_or(0),"download":c["download"].as_u64().unwrap_or(0),"process":c["metadata"]["process"],"destination":format!("{}:{}",c["metadata"]["destinationIP"].as_str().unwrap_or(""),c["metadata"]["destinationPort"].as_str().map(str::to_owned).unwrap_or_else(||c["metadata"]["destinationPort"].to_string()))})).collect::<Vec<_>>()).unwrap_or_default();
+                    let connections=v["connections"].as_array().map(|a|a.iter().map(|c|json!({"id":c["id"].as_str().unwrap_or(""),"host":c["metadata"]["host"].as_str().unwrap_or(""),"network":c["metadata"]["network"].as_str().unwrap_or(""),"type":c["metadata"]["type"].as_str().unwrap_or(""),"rule":c["rule"].as_str().unwrap_or(""),"rulePayload":c["rulePayload"].as_str().unwrap_or(""),"chains":c["chains"].as_array().cloned().unwrap_or_default(),"routeKind":crate::traffic::route_kind(&c["chains"]),"upload":c["upload"].as_u64().unwrap_or(0),"download":c["download"].as_u64().unwrap_or(0),"process":c["metadata"]["process"],"destination":format!("{}:{}",c["metadata"]["destinationIP"].as_str().unwrap_or(""),c["metadata"]["destinationPort"].as_str().map(str::to_owned).unwrap_or_else(||c["metadata"]["destinationPort"].to_string()))})).collect::<Vec<_>>()).unwrap_or_default();
                     snapshot = json!({"uploadTotal":up,"downloadTotal":down,"connectionCount":connections.len(),"connections":connections});
                 }
                 Err(e) => error = Some(redact(&e.to_string())),
@@ -2989,7 +3710,11 @@ impl Core {
             isolated: self.engine.isolated,
             tun: settings["tun"] == true,
             running: self.engine.pid.is_some(),
-            mixed: self.engine.mixed,
+            mixed: if settings["staticExit"]["enabled"] == true && self.engine.pid.is_some() {
+                self.static_exit_port()?
+            } else {
+                self.engine.mixed
+            },
             selected: settings["selectedProxy"].clone(),
         })
     }
@@ -3002,6 +3727,10 @@ impl Core {
         ensure!(
             !self.jobs.stop_requested.load(Ordering::SeqCst),
             "检测已被断开请求取消。"
+        );
+        ensure!(
+            !self.jobs.chain_sampling.load(Ordering::SeqCst),
+            "ISP 链路扫描正在使用检测入口，请先等待或取消扫描。"
         );
         let node = self
             .nodes()?
@@ -3043,6 +3772,9 @@ impl Core {
             kind: kind.into(),
             recommended,
             probe: self.engine.probe,
+            select_probe: true,
+            via_static_exit: false,
+            current_exit_key: None,
             risk_key: self.risk_key.clone(),
             endpoint,
             token: self.diagnostic_token(),
@@ -3082,6 +3814,9 @@ impl Core {
                 .store
                 .write("runtime-state/speed-cache.json", &cache)?;
         } else if plan.kind == "risk" {
+            if let Some(key) = &plan.current_exit_key {
+                return self.finish_current_exit_risk(plan, key, result);
+            }
             let mut cache = self
                 .engine
                 .store
@@ -3184,6 +3919,7 @@ impl Core {
         } else if self.jobs.speed_active.load(Ordering::SeqCst)
             || self.jobs.risk_active.load(Ordering::SeqCst)
             || self.jobs.udp_active.load(Ordering::SeqCst)
+            || self.jobs.chain_sampling.load(Ordering::SeqCst)
         {
             Some("node-test")
         } else {
@@ -3205,6 +3941,13 @@ impl Core {
             check,
             token: self.diagnostic_token(),
             jobs: self.jobs.clone(),
+            chain_context: self
+                .engine
+                .store
+                .settings()
+                .ok()
+                .filter(|s| s["staticExit"]["enabled"] == true)
+                .and_then(|_| self.chain_cache_identity().ok()),
         };
         self.publish_read_views();
         Ok(plan)
@@ -3216,6 +3959,7 @@ impl Core {
             || self.jobs.speed_active.load(Ordering::SeqCst)
             || self.jobs.risk_active.load(Ordering::SeqCst)
             || self.jobs.udp_active.load(Ordering::SeqCst)
+            || self.jobs.chain_sampling.load(Ordering::SeqCst)
         {
             return None;
         }
@@ -3239,41 +3983,14 @@ impl Core {
         let accepted = self
             .diagnostics
             .finish(plan.kind, plan.id, record, Instant::now());
+        if accepted && plan.kind == CheckKind::Connectivity {
+            if let (Some(context), Ok(value)) = (&plan.chain_context, &result) {
+                self.record_diagnostic_connection_check(context, value);
+            }
+        }
         self.publish_read_views();
         ensure!(accepted, "检测结果已过期，未覆盖新的检测状态。");
         result
-    }
-    pub fn publish_read_views(&mut self) {
-        self.sync_diagnostics();
-        let diagnostics = self.diagnostics.status();
-        let serialized = diagnostics.to_string();
-        if serialized != self.last_diagnostics_state {
-            (self.events)("diagnostics:updated", diagnostics.clone());
-            self.last_diagnostics_state = serialized;
-        }
-        let Ok(bootstrap) = self.bootstrap() else {
-            return;
-        };
-        let views = [
-            ("vpn:get-status", bootstrap["status"].clone()),
-            ("diagnostics:get-state", diagnostics),
-            ("nodes:list", bootstrap["nodes"].clone()),
-            ("node-groups:list", bootstrap["groups"].clone()),
-            ("traffic:get-monitor", bootstrap["traffic"].clone()),
-            (
-                "traffic:get-snapshot",
-                bootstrap["traffic"]["snapshot"].clone(),
-            ),
-            ("native:bootstrap", bootstrap),
-        ];
-        if let Ok(mut cache) = self.jobs.read_views.lock() {
-            for (channel, mut value) in views {
-                if value.is_object() {
-                    value["snapshotAt"] = json!(now());
-                }
-                cache.insert(channel.into(), value);
-            }
-        }
     }
     pub fn take_background_sample(&mut self) -> Option<BackgroundSample> {
         if self.environment.sleeping
@@ -3318,7 +4035,12 @@ impl Core {
                 .as_str()
                 .unwrap_or("DIRECT")
                 .into(),
-            probe: self.engine.probe,
+            probe: if settings["staticExit"]["enabled"] == true {
+                self.static_exit_port().ok()?
+            } else {
+                self.engine.probe
+            },
+            static_exit: settings["staticExit"]["enabled"] == true,
             jobs: self.jobs.clone(),
             wechat: settings["specialCompatibilityRules"]["wechatImageSendFallback"] == true,
         })
@@ -3339,7 +4061,7 @@ impl Core {
             let group = self.live_proxies.as_ref().map(|v| &v["proxies"]["WECHAT"]);
             let route = match group.and_then(|g| g["now"].as_str()) {
                 Some("DIRECT") => "direct",
-                Some("VPN") => "proxy",
+                Some("VPN" | crate::static_exit::EXIT) => "proxy",
                 _ => "unknown",
             };
             if self.wechat_route != Some(route) {
@@ -3400,6 +4122,10 @@ impl Core {
                 self.last_health_tick = Some(Instant::now() - Duration::from_secs(25))
             }
             PathAction::Recover => {
+                if outcome == PathOutcome::EgressFailure && self.chain_failover_ready() {
+                    self.jobs.wake_background();
+                    return;
+                }
                 let reason = if outcome == PathOutcome::DnsFailure {
                     "dns-health"
                 } else {
@@ -3509,7 +4235,7 @@ impl Core {
             {
                 // A network change invalidates in-flight node checks too; they
                 // must not defer recovery indefinitely or restore a stale outlet.
-                self.jobs.cancel_all();
+                self.jobs.invalidate_diagnostics();
                 self.publish_runtime_status();
                 let retry_state = self.network_recovery.clone();
                 let result = if self.engine.pid.is_none() && self.wants_running {
@@ -3573,7 +4299,7 @@ impl Core {
         if !same_path {
             if let Err(error) = self
                 .engine
-                .close_departed_path_connections(&self.jobs.stop_requested)
+                .close_departed_path_connections(&self.jobs.stop_requested, false)
             {
                 self.network_recovery = retry_state;
                 return Err(error);
@@ -3597,6 +4323,7 @@ impl Core {
         if self.jobs.risk_active.load(Ordering::SeqCst)
             || self.jobs.speed_active.load(Ordering::SeqCst)
             || self.jobs.udp_active.load(Ordering::SeqCst)
+            || self.jobs.chain_sampling.load(Ordering::SeqCst)
         {
             return None;
         }
@@ -3719,6 +4446,15 @@ pub struct NetworkCheck {
     selected: Value,
 }
 impl NetworkCheck {
+    pub(crate) fn mobile(port: u16, selected: Value) -> Self {
+        Self {
+            isolated: false,
+            tun: true,
+            running: true,
+            mixed: port,
+            selected,
+        }
+    }
     fn proxied(&self, timeout: u64) -> Result<Client> {
         ensure!(self.running, "请先连接 VPN。");
         proxied(self.mixed, timeout)
@@ -3782,7 +4518,7 @@ impl NetworkCheck {
             json!({"connectivity":network::complete_connectivity(&domestic,&foreign,&dns,&chatgpt,ip),"nodeRisk":null,"nodeRiskError":null,"checkedAt":now()}),
         )
     }
-    fn measure(&self, url: &str, proxy: bool) -> Value {
+    pub(crate) fn measure(&self, url: &str, proxy: bool) -> Value {
         let start = Instant::now();
         let client = if proxy {
             self.proxied(8)
@@ -3814,25 +4550,36 @@ impl NetworkCheck {
     }
     fn websites_with(&self, current: impl Fn() -> bool) -> Result<Value> {
         ensure!(self.running, "请先连接 VPN。");
-        let mut results = Vec::new();
-        for (id, label, url) in [
+        ensure!(current(), "连接已变化，检测已取消。");
+        let fixture = if self.isolated {
+            Some(network::fixture_url("SPLITVPN_TEST_CONNECTIVITY_URL")?)
+        } else {
+            None
+        };
+        let targets = [
             ("google", "Google", "https://www.google.com/generate_204"),
             ("chatgpt", "ChatGPT", "https://chatgpt.com/cdn-cgi/trace"),
             ("claude", "Claude", "https://claude.ai"),
-        ] {
-            ensure!(current(), "连接已变化，检测已取消。");
-            let fixture;
-            let url = if self.isolated {
-                fixture = network::fixture_url("SPLITVPN_TEST_CONNECTIVITY_URL")?;
-                fixture.as_str()
-            } else {
-                url
-            };
-            let mut v = self.measure(url, true);
-            v["id"] = json!(id);
-            v["label"] = json!(label);
-            results.push(v);
-        }
+        ];
+        let results = std::thread::scope(|scope| {
+            let tasks: Vec<_> = targets
+                .into_iter()
+                .map(|(id, label, url)| {
+                    let url = fixture.as_deref().unwrap_or(url);
+                    scope.spawn(move || {
+                        let mut value = self.measure(url, true);
+                        value["id"] = json!(id);
+                        value["label"] = json!(label);
+                        value
+                    })
+                })
+                .collect();
+            tasks
+                .into_iter()
+                .map(|task| task.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        ensure!(current(), "连接已变化，检测已取消。");
         Ok(json!({"proxyName":self.selected,"results":results,"checkedAt":now()}))
     }
 }
@@ -3848,10 +4595,13 @@ fn system_website(url: &str) -> Value {
         Ok(response) => {
             let status = response.status().as_u16();
             json!({"ok":status == 200,"httpStatus":status,"elapsedMs":start.elapsed().as_millis(),
+                "failureReason":if status == 200 {None}else{Some(if matches!(status,403|429|451){"restricted"}else{"http-status"})},
                 "error":if status == 200 {None}else{Some(format!("ChatGPT 返回 HTTP {status}。"))}})
         }
         Err(error) => {
-            json!({"ok":false,"httpStatus":null,"elapsedMs":null,"error":redact(&error.to_string())})
+            let error: anyhow::Error = error.into();
+            json!({"ok":false,"httpStatus":null,"elapsedMs":null,
+                "failureReason":crate::diagnostics::failure_kind(&error),"error":redact(&error.to_string())})
         }
     }
 }
@@ -3871,6 +4621,9 @@ pub struct NodeDiagnostic {
     kind: String,
     recommended: bool,
     probe: u16,
+    select_probe: bool,
+    via_static_exit: bool,
+    current_exit_key: Option<String>,
     risk_key: String,
     endpoint: Option<url::Url>,
     token: DiagnosticToken,
@@ -3910,8 +4663,10 @@ impl NodeDiagnostic {
             .try_lock()
             .map_err(|_| anyhow::anyhow!("检测入口正在使用，请稍后重试。"))?;
         ensure!(self.probe != 0, "检测入口尚未就绪，请断开后重新连接 VPN。");
-        self.io
-            .api("PUT", "/proxies/PROBE", Some(&json!({"name":self.name})))?;
+        if self.select_probe {
+            self.io
+                .api("PUT", "/proxies/PROBE", Some(&json!({"name":self.name})))?;
+        }
         let port = self.probe;
         if self.kind == "udp" {
             let result = udp_stun(port);
@@ -4027,6 +4782,7 @@ pub struct BackgroundSample {
     tun: bool,
     selected: String,
     probe: u16,
+    static_exit: bool,
     jobs: Arc<Jobs>,
     wechat: bool,
 }
@@ -4101,14 +4857,15 @@ impl BackgroundSample {
         if self.probe == 0 {
             return result;
         }
-        if self
-            .io
-            .api(
-                "PUT",
-                "/proxies/PROBE",
-                Some(&json!({"name":self.selected})),
-            )
-            .is_err()
+        if !self.static_exit
+            && self
+                .io
+                .api(
+                    "PUT",
+                    "/proxies/PROBE",
+                    Some(&json!({"name":self.selected})),
+                )
+                .is_err()
         {
             return result;
         }
@@ -4165,6 +4922,7 @@ pub struct DiagnosticRequest {
     check: NetworkCheck,
     token: DiagnosticToken,
     jobs: Arc<Jobs>,
+    chain_context: Option<Value>,
 }
 impl DiagnosticRequest {
     pub fn run(self, core: &Mutex<Core>) -> Result<Value> {
@@ -4182,14 +4940,63 @@ impl DiagnosticRequest {
             .complete_diagnostic(&self, result)
     }
 }
+pub struct StaticExitCheck {
+    port: u16,
+    expected: String,
+    token: DiagnosticToken,
+}
+impl StaticExitCheck {
+    fn measure(&self) -> Result<Value> {
+        // Fixed loopback inbound pins this request to the final hop even when
+        // the user's default rule is DIRECT. Never use ambient system proxies.
+        let port = self.port;
+        let client = proxied(port, 12)?;
+        let started = Instant::now();
+        let ip: Value = client
+            .get("https://api.ipify.org?format=json")
+            .send()
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.json())
+            .map_err(|_| anyhow::anyhow!("静态出口测试失败，请检查机场、协议、地址与账号密码。"))?;
+        let ip = ip["ip"]
+            .as_str()
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+            .context("出口检测没有返回有效 IP。")?
+            .to_string();
+        let expected = self.expected.as_str();
+        let matches = expected
+            .parse::<std::net::IpAddr>()
+            .ok()
+            .map(|e| e.to_string() == ip);
+        Ok(
+            json!({"ip":ip,"expectedIp":expected,"matchesExpected":matches,"elapsedMs":started.elapsed().as_millis(),"chain":"airport-static-exit","udpSupported":false}),
+        )
+    }
+}
 pub enum NetworkRequest {
     Subscription(ManualUpdate),
     Diagnostic(Box<DiagnosticRequest>),
     Node(Box<NodeDiagnostic>),
+    StaticExit(StaticExitCheck),
+    ChainConnect(Box<ChainConnect>),
+    ChainUse(Box<chain_use::ChainUse>),
 }
 impl NetworkRequest {
     pub fn run(self, core: &Mutex<Core>) -> Result<Value> {
         match self {
+            Self::ChainConnect(plan) => plan.run(core),
+            Self::ChainUse(plan) => plan.run(core),
+            Self::StaticExit(plan) => {
+                let result = plan.measure()?;
+                let c = core
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+                ensure!(
+                    c.diagnostic_current(&plan.token),
+                    "连接已变化，请重新测试静态出口。"
+                );
+                Ok(result)
+            }
             Self::Subscription(plan) => {
                 let downloaded = plan.download();
                 let mut c = core
@@ -4219,6 +5026,17 @@ pub fn prepare_network_request(
 ) -> Option<Result<NetworkRequest>> {
     let lock = || core.lock().map_err(|_| anyhow::anyhow!("后台状态不可用。"));
     Some(match channel {
+        "chain-scan:use" => lock()
+            .and_then(|c| c.prepare_chain_use(payload))
+            .map(Box::new)
+            .map(NetworkRequest::ChainUse),
+        "chain-scan:connect" => lock()
+            .and_then(|c| c.prepare_chain_connect(payload))
+            .map(Box::new)
+            .map(NetworkRequest::ChainConnect),
+        "static-exit:test" => lock()
+            .and_then(|c| c.begin_static_exit_check())
+            .map(NetworkRequest::StaticExit),
         "subscription:update" => lock()
             .and_then(|mut c| c.begin_manual_update(payload))
             .map(NetworkRequest::Subscription),
@@ -4234,21 +5052,15 @@ pub fn prepare_network_request(
                 )
             })
             .map(|plan| NetworkRequest::Diagnostic(Box::new(plan))),
-        "nodes:test"
-        | "nodes:test-recommended"
-        | "nodes:check-risk"
-        | "nodes:check-current-risk"
-        | "nodes:test-udp" => lock()
+        "nodes:check-current-risk" => lock()
+            .and_then(|c| c.prepare_current_exit_risk())
+            .map(|plan| NetworkRequest::Node(Box::new(plan))),
+        "nodes:test" | "nodes:test-recommended" | "nodes:check-risk" | "nodes:test-udp" => lock()
             .and_then(|c| {
                 let name = if channel == "nodes:test-recommended" {
                     c.node_identity(string(payload, "identityKey")?)?["name"]
                         .as_str()
                         .context("节点不存在。")?
-                        .to_owned()
-                } else if channel == "nodes:check-current-risk" {
-                    c.engine.store.settings()?["selectedProxy"]
-                        .as_str()
-                        .context("当前节点不存在。")?
                         .to_owned()
                 } else {
                     string(payload, "nodeName")?.to_owned()
@@ -4431,6 +5243,10 @@ pub fn start_batch(core: Arc<Mutex<Core>>, kind: String, payload: Value) -> Resu
         let c = core
             .lock()
             .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+        ensure!(
+            !c.jobs.chain_sampling.load(Ordering::SeqCst),
+            "请先等待当前 ISP 链路采样完成。"
+        );
         let names = payload["nodeNames"]
             .as_array()
             .context("请先选择节点。")
@@ -4515,6 +5331,990 @@ pub fn start_batch(core: Arc<Mutex<Core>>, kind: String, payload: Value) -> Resu
             &format!("nodes:{kind}-progress"),
             json!({"id":id,"checked":checked,"total":total,"finished":true,"cancelled":jobs.cancelled(&kind),"error":last_error,"stoppedReason":last_error}),
         );
+    });
+    Ok(reply)
+}
+
+fn chain_targets(isolated: bool) -> Result<crate::chain_scan::Targets> {
+    if !isolated {
+        return Ok(crate::chain_scan::Targets::default());
+    }
+    // Isolated runtime may only use explicit loopback fixtures.
+    Ok(crate::chain_scan::Targets {
+        latency: network::fixture_url("SPLITVPN_TEST_CHAIN_LATENCY_URL")?,
+        download: network::fixture_url("SPLITVPN_TEST_CHAIN_DOWNLOAD_URL")?,
+        ip: network::fixture_url("SPLITVPN_TEST_CHAIN_IP_URL")?,
+        bytes: crate::chain_scan::DOWNLOAD_BYTES,
+    })
+}
+struct ChainActivity(Arc<Jobs>);
+impl Drop for ChainActivity {
+    fn drop(&mut self) {
+        self.0.chain_active.store(false, Ordering::SeqCst);
+        self.0.wake_background();
+    }
+}
+
+pub struct ChainConnect {
+    node: Value,
+    environment: Value,
+    port: u16,
+    expected: String,
+    token: DiagnosticToken,
+    jobs: Arc<Jobs>,
+    io: ControllerIo,
+    ip_url: String,
+    latency_url: String,
+}
+struct ChainConnectActivity(Arc<Jobs>);
+impl Drop for ChainConnectActivity {
+    fn drop(&mut self) {
+        self.0.chain_connect_active.store(false, Ordering::SeqCst);
+    }
+}
+impl ChainConnect {
+    fn run(self, core: &Mutex<Core>) -> Result<Value> {
+        ensure!(
+            !self.jobs.chain_connect_active.swap(true, Ordering::SeqCst),
+            "链路任务正在运行。"
+        );
+        self.jobs
+            .chain_connect_cancel
+            .store(false, Ordering::SeqCst);
+        let _active = ChainConnectActivity(self.jobs.clone());
+        let _lease = self
+            .jobs
+            .probe_gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("检测入口不可用。"))?;
+        {
+            let c = core
+                .lock()
+                .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+            ensure!(
+                c.diagnostic_current(&self.token)
+                    && c.chain_cache_identity()
+                        .is_ok_and(|k| k == self.environment),
+                "连接环境已变化，请重新复核。"
+            );
+        }
+        self.io.api(
+            "PUT",
+            &format!("/proxies/{}", encode(crate::static_exit::SCAN_FRONT)),
+            Some(&json!({"name":self.node["name"]})),
+        )?;
+        let (ip, verification_ms) = match crate::chain_scan::recheck(
+            self.port,
+            &self.latency_url,
+            &self.ip_url,
+            &self.expected,
+        ) {
+            Ok(result) => result,
+            Err(_) => {
+                if let Ok(mut c) = core.lock() {
+                    if c.diagnostic_current(&self.token) {
+                        c.record_connection_check(&self.node, "failed");
+                        let _ = c.save_chain_cache();
+                    }
+                }
+                bail!("链路连通性或出口复核失败，当前连接已保留。");
+            }
+        };
+        let mut c = core
+            .lock()
+            .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+        ensure!(
+            !self.jobs.chain_connect_cancel.load(Ordering::SeqCst)
+                && c.diagnostic_current(&self.token)
+                && c.chain_cache_identity()
+                    .is_ok_and(|k| k == self.environment),
+            "连接环境已变化，请重新扫描。"
+        );
+        c.assert_company_owner()?;
+        let already_selected = c.engine.store.settings()?["selectedProxy"] == self.node["name"]
+            && c.engine.selections()?["VPN"] == self.node["name"];
+        if !already_selected {
+            c.select_node(
+                "nodes:select-v2",
+                &json!({"identityKey":self.node["identityKey"],"rebuildProxyConnections":true}),
+            )?;
+        }
+        c.chain_token = Some(c.diagnostic_token());
+        c.chain_scan["connectedIdentityKey"] = self.node["identityKey"].clone();
+        c.record_connection_check(&self.node, "passed");
+        if let Some(row) = c.chain_scan["results"].as_array_mut().and_then(|rows| {
+            rows.iter_mut()
+                .find(|r| r["identityKey"] == self.node["identityKey"])
+        }) {
+            row["lastVerifiedAt"] = json!(now());
+            row["verificationLatencyMs"] = json!(verification_ms);
+        }
+        let measurement_context = c.chain_cache_key.clone();
+        for row in c.chain_scan["results"].as_array_mut().into_iter().flatten() {
+            if row.get("measurementContext").is_none() {
+                row["measurementContext"] = measurement_context.clone();
+            }
+        }
+        if let Ok(key) = c.chain_cache_identity() {
+            c.chain_cache_key = key;
+        }
+        if c.save_chain_cache().is_err() {
+            c.chain_scan["cacheError"] = json!("结果暂未保存到磁盘。");
+        }
+        c.publish_read_views();
+        Ok(
+            json!({"connected":true,"nodeName":self.node["name"],"exitIp":ip,"verificationLatencyMs":verification_ms,"verifiedAt":now()}),
+        )
+    }
+}
+
+struct ChainSampling(Arc<Jobs>);
+impl Drop for ChainSampling {
+    fn drop(&mut self) {
+        self.0.chain_sampling.store(false, Ordering::SeqCst);
+    }
+}
+fn chain_interval(isolated: bool) -> Duration {
+    let ms = if isolated {
+        std::env::var("SPLITVPN_TEST_CHAIN_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|n| n.clamp(100, 60000))
+            .unwrap_or(60000)
+    } else {
+        60000
+    };
+    Duration::from_millis(ms)
+}
+pub fn start_chain_scan(core: Arc<Mutex<Core>>, payload: Value) -> Result<Value> {
+    let (
+        nodes,
+        candidates,
+        port,
+        io,
+        jobs,
+        targets,
+        expected,
+        id,
+        mode,
+        interval,
+        probe,
+        force_retest,
+        automatic,
+    ) = {
+        let mut c = core
+            .lock()
+            .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+        allowed_keys(
+            &payload,
+            &[
+                "identityKeys",
+                "subscriptionId",
+                "mode",
+                "forceRetest",
+                "automatic",
+            ],
+        )?;
+        let force_retest = payload
+            .get("forceRetest")
+            .map(|v| v.as_bool().context("重测开关需要布尔值。"))
+            .transpose()?
+            .unwrap_or(false);
+        let mode = payload["mode"].as_str().unwrap_or("accumulate").to_owned();
+        let automatic = payload
+            .get("automatic")
+            .map(|v| v.as_bool().context("自动任务标识需要布尔值。"))
+            .transpose()?
+            .unwrap_or(false);
+        if automatic {
+            let settings = c.engine.store.settings()?;
+            ensure!(
+                mode == "continuous"
+                    && payload.get("identityKeys").is_none()
+                    && payload.get("subscriptionId").is_none()
+                    && settings["chainAutoRefresh"]["enabled"] == true
+                    && settings["chainAutoRefresh"]["paused"] != true
+                    && !c.chain_auto_paused_in_memory
+                    && !c.environment.sleeping
+                    && !c.environment.low_power
+                    && !chain_automatic::battery_blocked(&c)
+                    && !chain_automatic::network_settling(&c)
+                    && chain_automatic::baseline_ready(&c)
+                    && chain_automatic::batch_due(&c.chain_scan, chrono::Utc::now()),
+                "日常自动刷新未开启或已暂停。"
+            );
+        }
+
+        ensure!(
+            matches!(
+                mode.as_str(),
+                "full" | "accumulate" | "continuous" | "quick"
+            ),
+            "请选择全部重测、积累测试或持续测试。"
+        );
+        c.assert_company_owner()?;
+
+        let s = c.engine.store.settings()?;
+        ensure!(
+            s["staticExit"]["server"]
+                .as_str()
+                .is_some_and(|v| !v.is_empty())
+                && s["staticExit"]["port"].as_u64().is_some_and(|v| v > 0),
+            "请先保存 ISP 出口配置，无需开启 ISP。"
+        );
+        ensure!(
+            !c.jobs.chain_active.load(Ordering::SeqCst)
+                && !c.jobs.chain_connect_active.load(Ordering::SeqCst),
+            "后台链路任务正在运行，请先暂停。"
+        );
+        ensure!(
+            !c.jobs.speed_active.load(Ordering::SeqCst)
+                && !c.jobs.risk_active.load(Ordering::SeqCst)
+                && !c.jobs.udp_active.load(Ordering::SeqCst),
+            "请先等待当前节点检测完成。"
+        );
+        let keys = payload
+            .get("identityKeys")
+            .map(|v| v.as_array().context("节点列表格式无效。"))
+            .transpose()?;
+        let subscription_id = payload
+            .get("subscriptionId")
+            .map(|v| {
+                v.as_str()
+                    .filter(|id| !id.is_empty())
+                    .context("请选择有效订阅。")
+            })
+            .transpose()?;
+        ensure!(
+            subscription_id.is_none() || keys.is_none(),
+            "订阅范围与节点列表不能同时指定。"
+        );
+        ensure!(
+            subscription_id.is_none() || mode != "full",
+            "按订阅全量重测请使用积累模式并开启重测，其他订阅的成绩会保留。"
+        );
+        ensure!(
+            !force_retest
+                || (mode == "accumulate"
+                    && (keys.is_some_and(|k| !k.is_empty()) || subscription_id.is_some())),
+            "重测需要指定节点或订阅，并使用积累模式。"
+        );
+        let inventory = subscription::provider_nodes(&c.engine.store)?
+            .into_iter()
+            .filter(|n| n["identityAmbiguous"] == false)
+            .collect::<Vec<_>>();
+        let maintained = c.maintenance_candidates(&inventory);
+        if automatic {
+            // Recheck under the start lock: a manual test may have refreshed a
+            // planned candidate. Never launch an idle probe for fresh results.
+            ensure!(
+                chain_automatic::next_automatic_candidate(
+                    &maintained,
+                    c.chain_scan["results"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default(),
+                    &Value::Null,
+                )
+                .is_some(),
+                "当前成绩无需自动重测。"
+            );
+        }
+        // Keep raw server addresses inside the worker only, never in RPC rows or
+        // persisted observations.
+        let mut servers = std::collections::HashMap::new();
+        for (entry, _, raw_nodes) in subscription::enabled_providers(&c.engine.store)? {
+            for node in raw_nodes {
+                let identity = crate::storage::identity(
+                    entry["id"].as_str().unwrap_or(""),
+                    node["name"].as_str().unwrap_or(""),
+                );
+                servers.insert(identity, node["server"].as_str().unwrap_or("").to_owned());
+            }
+        }
+        let mut all = inventory
+            .iter()
+            .filter(|n| {
+                keys.is_none_or(|a| a.contains(&n["identityKey"]))
+                    && subscription_id.is_none_or(|id| n["subscriptionId"] == id)
+                    && (!automatic
+                        || maintained
+                            .iter()
+                            .any(|m| m["identityKey"] == n["identityKey"]))
+            })
+            .cloned()
+            .map(|mut node| {
+                node["scanServer"] = json!(
+                    servers
+                        .get(node["identityKey"].as_str().unwrap_or(""))
+                        .cloned()
+                        .unwrap_or_default()
+                );
+                node
+            })
+            .collect::<Vec<_>>();
+        if mode == "quick" {
+            let compatible = c.chain_cache_identity().is_ok_and(|k| {
+                !k["settings"].is_null() && k["settings"] == c.chain_cache_key["settings"]
+            });
+            all = chain_routine::quick_candidates(
+                &all,
+                if compatible {
+                    c.chain_scan["results"]
+                        .as_array()
+                        .map(Vec::as_slice)
+                        .unwrap_or_default()
+                } else {
+                    &[]
+                },
+                &s["selectedProxy"],
+                &s["favoriteNodeNames"],
+            );
+        }
+        ensure!(
+            !all.is_empty() && all.len() <= 5000,
+            "没有可测试的机场节点，或节点数量超过 5000。"
+        );
+        let targets = chain_targets(c.engine.isolated)?;
+        // Always isolate scanning from connection rebuilds and business selectors.
+        let probe = if !c.engine.isolated {
+            Some(chain_probe::ChainProbe::start(&c, &s)?)
+        } else {
+            None
+        };
+        let port = if let Some(probe) = &probe {
+            probe.port
+        } else {
+            c.chain_scan_port()?
+        };
+        let mut io = probe
+            .as_ref()
+            .map(|p| p.io.clone())
+            .unwrap_or_else(|| c.engine.io());
+        if c.engine.isolated {
+            // Explicit loopback fixture also implements the scan controller.
+            io.controller = port;
+        }
+        let key = c.chain_cache_identity()?;
+        let manifest = c.chain_manifest_identity()?;
+        let context = c.chain_context()?;
+        let rejection_context = crate::storage::sha256(&serde_json::to_vec(
+            &json!({"settings":context,"network":key["network"]}),
+        )?);
+        let rejected_rows = if c.chain_scan["rejectionContext"] == rejection_context {
+            c.chain_scan["rejectedResults"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(crate::chain_scan::rejected)
+                .filter(|r| {
+                    inventory
+                        .iter()
+                        .any(|n| n["identityKey"] == r["identityKey"])
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+        let previous = c.chain_scan["results"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let same_settings =
+            !key["settings"].is_null() && c.chain_cache_key["settings"] == key["settings"];
+        let rows = if mode != "full" && same_settings {
+            previous
+                .into_iter()
+                .filter(|r| {
+                    inventory.iter().any(|n| {
+                        n["identityKey"] == r["identityKey"]
+                            && n["providerRevision"] == r["providerRevision"]
+                    })
+                })
+                .map(|mut row| {
+                    if row.get("measurementContext").is_none() {
+                        row["measurementContext"] = c.chain_cache_key.clone();
+                    }
+                    row
+                })
+                .collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
+        let nodes = if mode == "accumulate" && !force_retest {
+            all.iter()
+                .filter(|n| {
+                    !rows.iter().any(|r| {
+                        r["identityKey"] == n["identityKey"]
+                            && r["status"] == "available"
+                            && crate::chain_scan::fresh(r, chrono::Utc::now())
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            all.clone()
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        let interval = chain_interval(c.engine.isolated);
+        let last_automatic_sample = c.chain_scan["lastAutomaticSampleAt"].clone();
+        let last_batch = c.chain_scan["lastAutomaticBatchAt"].clone();
+        let uncertain = c.chain_scan["autoNetworkUncertain"].clone();
+        let baseline = chain_automatic::baseline_ready(&c);
+        let previous_pool = c.chain_scan["maintenanceIdentityKeys"].clone();
+        let connection_check = c.chain_scan["connectionCheck"].clone();
+        let failover_attempt = c.chain_scan["lastFailoverAttemptAt"].clone();
+        let failover_at = c.chain_scan["lastFailoverAt"].clone();
+        let connected = if same_settings {
+            c.chain_scan["connectedIdentityKey"].clone()
+        } else {
+            Value::Null
+        };
+        c.chain_scan = json!({"id":id,"mode":mode,"running":!nodes.is_empty(),"testing":false,"cancelled":false,"completed":0,"total":nodes.len(),"candidateCount":all.len(),"currentNode":null,"results":rows,"error":null,"startedAt":now(),"cacheUsable":mode!="full","nextTestAt":null,"intervalSeconds":60,"waitingReason":null,"stopReason":null,"networkRestarts":0});
+        c.chain_scan["baselineReady"] = json!(baseline && mode != "full");
+        c.chain_scan["baselineEligible"] =
+            json!(mode == "full" && keys.is_none() && subscription_id.is_none());
+        c.chain_scan["connectedIdentityKey"] = connected;
+        c.chain_scan["maintenanceIdentityKeys"] = if automatic {
+            json!(
+                maintained
+                    .iter()
+                    .map(|n| n["identityKey"].clone())
+                    .collect::<Vec<_>>()
+            )
+        } else {
+            previous_pool
+        };
+        c.chain_scan["connectionCheck"] = connection_check;
+        c.chain_scan["lastFailoverAttemptAt"] = failover_attempt;
+        c.chain_scan["lastFailoverAt"] = failover_at;
+        c.chain_scan["lastAutomaticBatchAt"] = if automatic { json!(now()) } else { last_batch };
+        c.chain_scan["autoNetworkUncertain"] = uncertain;
+        if automatic {
+            c.chain_auto_error = false;
+        }
+        c.chain_scan["automatic"] = json!(automatic);
+        c.chain_scan["lastAutomaticSampleAt"] = last_automatic_sample;
+        c.chain_scan["taskIdentityKeys"] = json!(
+            nodes
+                .iter()
+                .map(|n| n["identityKey"].clone())
+                .collect::<Vec<_>>()
+        );
+        c.chain_scan["processedIdentityKeys"] = json!([]);
+        c.chain_scan["sampleDurationsMs"] = json!([]);
+        c.chain_scan["candidateIdentityKeys"] = json!(
+            all.iter()
+                .map(|n| n["identityKey"].clone())
+                .collect::<Vec<_>>()
+        );
+        c.chain_scan["rejectedResults"] = json!(rejected_rows);
+        c.chain_scan["rejectionContext"] = json!(rejection_context);
+        c.chain_token = Some(c.diagnostic_token());
+        c.chain_manifest = manifest;
+        c.chain_settings = context;
+        c.chain_cache_key = key;
+        c.jobs
+            .chain_priority
+            .lock()
+            .map_err(|_| anyhow::anyhow!("重测队列不可用。"))?
+            .clear();
+        c.jobs.chain_cancel.store(false, Ordering::SeqCst);
+        if nodes.is_empty() {
+            c.chain_scan["stopReason"] = json!("completed");
+            c.chain_scan["finishedAt"] = json!(now());
+            c.chain_scan["cacheUsable"] = json!(true);
+            c.save_chain_cache()?;
+            return Ok(json!({"id":id,"total":0,"reusedCount":rows.len()}));
+        }
+        c.save_chain_cache()?;
+        ensure!(
+            !c.jobs.chain_active.swap(true, Ordering::SeqCst),
+            "后台链路任务正在运行。"
+        );
+        let probe = probe.map(|p| Arc::new(Mutex::new(p)));
+        c.chain_probe = probe.clone();
+        (
+            nodes,
+            all,
+            port,
+            io,
+            c.jobs.clone(),
+            targets,
+            s["staticExit"]["expectedIp"]
+                .as_str()
+                .unwrap_or("")
+                .to_owned(),
+            id,
+            mode,
+            interval,
+            probe,
+            force_retest,
+            automatic,
+        )
+    };
+    let reply = json!({"id":id,"total":nodes.len(),"mode":mode,"downloadBytesPerNode":crate::chain_scan::DOWNLOAD_BYTES*2});
+    std::thread::spawn(move || {
+        let _active = ChainActivity(jobs.clone());
+        let _probe = probe;
+        let keep_running = || {
+            !jobs.cancelled("chain")
+                && core
+                    .lock()
+                    .is_ok_and(|c| c.chain_scan["id"] == id && c.chain_configuration_current())
+        };
+        let current = || {
+            keep_running()
+                && core.lock().is_ok_and(|c| {
+                    !c.environment.sleeping
+                        && c.chain_environment_valid()
+                        && (!automatic
+                            || (!c.environment.low_power
+                                && !chain_automatic::battery_blocked(&c)
+                                && !chain_automatic::network_settling(&c)))
+                })
+        };
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
+            let mut turn = 0;
+            let mut active_nodes = nodes.clone();
+            let mut queue = std::collections::VecDeque::from(active_nodes.clone());
+            let mut generation = 0;
+            let mut skipped = HashSet::new();
+            let mut auto_failures = 0usize;
+            let mut network_checked = false;
+            while keep_running() {
+                let ready = {
+                    let mut c = core
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+                    let ready = c.prepare_chain_cycle()?;
+                    let observed = c.chain_scan["networkRestarts"].as_u64().unwrap_or(0);
+                    if observed != generation {
+                        generation = observed;
+                        active_nodes = candidates.clone();
+                        queue = std::collections::VecDeque::from(active_nodes.clone());
+                        skipped.clear();
+                        turn = 0;
+                        c.chain_scan["total"] = json!(active_nodes.len());
+                        c.chain_scan["taskIdentityKeys"] = json!(
+                            active_nodes
+                                .iter()
+                                .map(|n| n["identityKey"].clone())
+                                .collect::<Vec<_>>()
+                        );
+                    }
+                    ready
+                };
+                if !ready {
+                    // Do not keep a dedicated worker waking once a second while
+                    // automatic maintenance is blocked by power or network state.
+                    if automatic {
+                        break;
+                    }
+                    std::thread::sleep(interval.min(Duration::from_secs(1)));
+                    continue;
+                }
+                if automatic && !network_checked {
+                    network_checked = true;
+                    let uncertain = core
+                        .lock()
+                        .is_ok_and(|c| c.chain_scan["autoNetworkUncertain"] == true);
+                    if uncertain {
+                        // This is only a low-cost path check, not proof that any ISP route works.
+                        let url = if io.isolated {
+                            &targets.latency
+                        } else {
+                            "https://www.baidu.com"
+                        };
+                        let ok = Client::builder()
+                            .no_proxy()
+                            .timeout(Duration::from_secs(4))
+                            .redirect(reqwest::redirect::Policy::none())
+                            .build()
+                            .and_then(|client| client.get(url).send())
+                            .is_ok_and(|response| response.status().is_success());
+                        if !ok {
+                            break;
+                        }
+                    }
+                }
+                if jobs.chain_connect_active.load(Ordering::SeqCst)
+                    || jobs.speed_active.load(Ordering::SeqCst)
+                    || jobs.risk_active.load(Ordering::SeqCst)
+                    || jobs.udp_active.load(Ordering::SeqCst)
+                {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                let priority = jobs
+                    .chain_priority
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("重测队列不可用。"))?
+                    .pop_front();
+                let prioritized = priority.is_some();
+                let node = if let Some(key) = priority {
+                    // Move the existing finite-scan candidate forward, rather than
+                    // adding a duplicate sample and inflating completion counts.
+                    if mode != "continuous" {
+                        queue.retain(|n| n["identityKey"] != key);
+                    }
+                    active_nodes
+                        .iter()
+                        .find(|n| n["identityKey"] == key)
+                        .cloned()
+                } else if mode == "continuous" {
+                    let c = core
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+                    let eligible = active_nodes
+                        .iter()
+                        .filter(|n| !skipped.contains(n["identityKey"].as_str().unwrap_or("")))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if automatic {
+                        let preferred = if turn == 0 {
+                            let selected = c.engine.store.settings()?["selectedProxy"].clone();
+                            eligible
+                                .iter()
+                                .find(|n| {
+                                    n["identityKey"] == c.chain_scan["connectedIdentityKey"]
+                                        && n["name"] == selected
+                                })
+                                .map(|n| n["identityKey"].clone())
+                                .unwrap_or(Value::Null)
+                        } else if turn == 1 {
+                            crate::chain_scan::ranked(&c.chain_scan, "balanced")?["recommendedIdentityKey"].clone()
+                        } else {
+                            Value::Null
+                        };
+                        chain_automatic::next_automatic_candidate(
+                            &eligible,
+                            c.chain_scan["results"]
+                                .as_array()
+                                .map(Vec::as_slice)
+                                .unwrap_or_default(),
+                            &preferred,
+                        )
+                    } else {
+                        crate::chain_scan::next_candidate(
+                            &eligible,
+                            c.chain_scan["results"]
+                                .as_array()
+                                .map(Vec::as_slice)
+                                .unwrap_or_default(),
+                            turn,
+                        )
+                    }
+                } else {
+                    queue.pop_front()
+                };
+                let Some(node) = node else {
+                    if automatic {
+                        break;
+                    }
+                    if mode != "continuous" {
+                        break;
+                    }
+                    let until = Instant::now() + interval;
+                    while keep_running()
+                        && current()
+                        && Instant::now() < until
+                        && jobs.chain_priority.lock().is_ok_and(|q| q.is_empty())
+                    {
+                        std::thread::sleep(interval.min(Duration::from_secs(1)));
+                    }
+                    skipped.clear();
+                    continue;
+                };
+                let server = node["scanServer"].as_str().unwrap_or("");
+                let address_key = crate::storage::sha256(server.as_bytes());
+                let ip_key = crate::chain_scan::proxy_ip_key(server, io.isolated);
+                if mode != "full" && !force_retest && !prioritized && !automatic {
+                    let mut c = core
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+                    let cached = c.chain_scan["rejectedResults"]
+                        .as_array()
+                        .and_then(|rows| {
+                            rows.iter()
+                                .find(|r| r["identityKey"] == node["identityKey"])
+                        })
+                        .cloned();
+                    if let Some(mut row) = cached.filter(|r| {
+                        crate::chain_scan::skip_rejected(r, &address_key, ip_key.as_deref())
+                    }) {
+                        // A previously unknown address can now be pinned without a
+                        // new quality test. Do not refresh testedAt or observationCount.
+                        if row["proxyIpKey"].is_null() {
+                            row["proxyIpKey"] = json!(ip_key);
+                        }
+                        row["cachedSkip"] = json!(true);
+                        if let Some(rows) = c.chain_scan["rejectedResults"].as_array_mut() {
+                            if let Some(old) = rows
+                                .iter_mut()
+                                .find(|r| r["identityKey"] == node["identityKey"])
+                            {
+                                *old = row.clone();
+                            }
+                        }
+                        let rows = c.chain_scan["results"]
+                            .as_array_mut()
+                            .context("结果缓存无效。")?;
+                        if let Some(old) = rows
+                            .iter_mut()
+                            .find(|r| r["identityKey"] == node["identityKey"])
+                        {
+                            *old = row;
+                        } else {
+                            rows.push(row);
+                        }
+                        c.record_chain_progress(&node, None);
+                        c.save_chain_cache()?;
+                        skipped.insert(node["identityKey"].as_str().unwrap_or("").to_owned());
+                        continue;
+                    }
+                }
+                let lease = jobs
+                    .probe_gate
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("检测入口不可用。"))?;
+                if !current() {
+                    if prioritized {
+                        jobs.requeue_chain_priority(node["identityKey"].as_str().unwrap_or(""));
+                    } else if mode != "continuous" {
+                        queue.push_front(node);
+                    }
+                    drop(lease);
+                    continue;
+                }
+                if jobs.chain_connect_active.load(Ordering::SeqCst) {
+                    if prioritized {
+                        jobs.requeue_chain_priority(node["identityKey"].as_str().unwrap_or(""));
+                    } else if mode != "continuous" {
+                        queue.push_front(node);
+                    }
+                    drop(lease);
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+                let sample_started = Instant::now();
+                let sampling = ChainSampling(jobs.clone());
+                {
+                    let mut c = core
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+                    jobs.chain_sampling.store(true, Ordering::SeqCst);
+                    c.chain_scan["testing"] = json!(true);
+                    c.chain_scan["currentNode"] = node["name"].clone();
+                    c.chain_scan["currentIdentityKey"] = node["identityKey"].clone();
+                    c.chain_scan["currentSampleStartedAt"] = json!(now());
+                    c.chain_scan["sampleStage"] = json!("preparing");
+                    c.chain_scan["nextTestAt"] = Value::Null;
+                }
+                let mut result = if io
+                    .api(
+                        "PUT",
+                        &format!("/proxies/{}", encode(crate::static_exit::SCAN_FRONT)),
+                        Some(&json!({"name":node["name"]})),
+                    )
+                    .is_ok()
+                {
+                    crate::chain_scan::measure(
+                        port,
+                        &node,
+                        &targets,
+                        &expected,
+                        current,
+                        |stage, attempt, total| {
+                            if let Ok(mut c) = core.lock() {
+                                if c.chain_scan["id"] == id && c.chain_scan["testing"] == true {
+                                    c.chain_scan["sampleStage"] = json!(stage);
+                                    c.chain_scan["stageAttempt"] = json!(attempt);
+                                    c.chain_scan["stageTotal"] = json!(total);
+                                }
+                            }
+                        },
+                    )
+                } else {
+                    crate::chain_scan::failed(&node, "selector-failed")
+                };
+                result["proxyAddressKey"] = json!(address_key);
+                result["proxyIpKey"] = json!(ip_key);
+                let sample_passed = result["status"] == "available";
+                if !current() {
+                    if prioritized {
+                        jobs.requeue_chain_priority(node["identityKey"].as_str().unwrap_or(""));
+                    } else if mode != "continuous" {
+                        queue.push_front(node);
+                    }
+                    continue;
+                }
+                {
+                    let mut c = core
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("后台状态不可用。"))?;
+                    let previous_failure =
+                        c.chain_scan["rejectedResults"].as_array().and_then(|rows| {
+                            rows.iter()
+                                .find(|r| r["identityKey"] == node["identityKey"])
+                        });
+                    crate::chain_scan::set_retry(&mut result, previous_failure, chrono::Utc::now());
+                    result["comparisonRound"] = json!(id);
+                    result["measurementContext"] = c.chain_cache_key.clone();
+                    // Write immutable evidence before replacing the current ranking row.
+                    if automatic && result["status"] != "available" {
+                        result["environmentUncertain"] = json!(true);
+                        auto_failures += 1;
+                        if auto_failures >= 2 {
+                            c.chain_scan["autoNetworkUncertain"] = json!(true);
+                        }
+                    } else if automatic && result["status"] == "available" {
+                        auto_failures = 0;
+                        c.chain_scan["autoNetworkUncertain"] = json!(false);
+                    }
+                    chain_history::append(
+                        &c.engine.store,
+                        &id,
+                        &c.chain_cache_key,
+                        &result,
+                        false,
+                    )?;
+                    let preserve = automatic
+                        && result["status"] != "available"
+                        && c.chain_scan["results"].as_array().is_some_and(|rows| {
+                            rows.iter().any(|r| {
+                                r["identityKey"] == node["identityKey"]
+                                    && r["status"] == "available"
+                            })
+                        });
+                    if preserve {
+                        if let Some(old) = c.chain_scan["results"].as_array_mut().and_then(|rows| {
+                            rows.iter_mut()
+                                .find(|r| r["identityKey"] == node["identityKey"])
+                        }) {
+                            old["environmentUncertain"] = json!(true);
+                        }
+                    } else {
+                        crate::chain_scan::upsert(
+                            c.chain_scan["results"]
+                                .as_array_mut()
+                                .context("结果缓存无效。")?,
+                            result.clone(),
+                        );
+                    }
+                    if result["status"] == "available" {
+                        // A complete route can be used while the wider comparison continues.
+                        c.chain_scan["cacheUsable"] = json!(true);
+                    }
+                    let rejected = c.chain_scan["rejectedResults"]
+                        .as_array_mut()
+                        .context("失败缓存无效。")?;
+                    rejected.retain(|r| r["identityKey"] != node["identityKey"]);
+                    if crate::chain_scan::rejected(&result) {
+                        rejected.push(result);
+                    }
+                    if automatic {
+                        c.chain_scan["lastAutomaticSampleAt"] = json!(now());
+                        c.chain_scan["lastAutomaticBatchAt"] =
+                            c.chain_scan["lastAutomaticSampleAt"].clone();
+                    }
+                    c.record_chain_progress(
+                        &node,
+                        Some(sample_started.elapsed().as_secs_f64() * 1000.0),
+                    );
+                    c.chain_scan["completed"] =
+                        json!(c.chain_scan["completed"].as_u64().unwrap_or(0) + 1);
+                    c.chain_scan["testing"] = json!(false);
+                    c.chain_scan["currentNode"] = Value::Null;
+                    c.save_chain_cache()?;
+                }
+                drop(sampling);
+                drop(lease);
+                turn += 1;
+                if mode == "quick" && sample_passed {
+                    if let Ok(mut c) = core.lock() {
+                        let processed = c.chain_scan["processedIdentityKeys"].clone();
+                        c.chain_scan["total"] = json!(processed.as_array().map_or(0, Vec::len));
+                        c.chain_scan["taskIdentityKeys"] = processed;
+                    }
+                    break;
+                }
+                if automatic {
+                    skipped.insert(node["identityKey"].as_str().unwrap_or("").to_owned());
+                    if turn >= 3 || auto_failures >= 2 {
+                        break;
+                    }
+                }
+                // Finish a bounded automatic batch together, then release its
+                // private engine. Only manual continuous scans wait a minute.
+                if mode == "continuous" && !automatic {
+                    skipped.clear();
+                    {
+                        if let Ok(mut c) = core.lock() {
+                            c.chain_scan["nextTestAt"] = json!(
+                                (chrono::Utc::now()
+                                    + chrono::Duration::milliseconds(interval.as_millis() as i64))
+                                .to_rfc3339()
+                            );
+                        }
+                    }
+                    let until = Instant::now() + interval;
+                    while keep_running()
+                        && current()
+                        && Instant::now() < until
+                        && jobs.chain_priority.lock().is_ok_and(|q| q.is_empty())
+                    {
+                        std::thread::sleep(interval.min(Duration::from_secs(1)));
+                    }
+                }
+            }
+            Ok(())
+        }));
+        if let Ok(mut c) = core.lock() {
+            if let Ok(mut priority) = jobs.chain_priority.lock() {
+                priority.clear();
+            }
+            if let Some(probe) = c.chain_probe.take() {
+                if let Ok(mut probe) = probe.lock() {
+                    probe.stop();
+                }
+            }
+            c.chain_scan["running"] = json!(false);
+            c.chain_scan["testing"] = json!(false);
+            c.chain_scan["currentNode"] = Value::Null;
+            c.chain_scan["nextTestAt"] = Value::Null;
+            let reason = if jobs.shutdown.load(Ordering::SeqCst) {
+                "shutdown"
+            } else if jobs.cancelled("chain") {
+                "user-paused"
+            } else if !c.chain_configuration_current() {
+                "configuration-changed"
+            } else if !matches!(outcome, Ok(Ok(()))) {
+                "error"
+            } else {
+                "completed"
+            };
+            let cancelled = reason != "completed";
+            c.chain_scan["cancelled"] = json!(cancelled);
+            c.chain_scan["waitingReason"] = Value::Null;
+            c.chain_scan["stopReason"] = json!(reason);
+            c.log("info", &format!("ISP 测试结束：{reason}。"));
+            c.chain_scan["finishedAt"] = json!(now());
+            if !matches!(outcome, Ok(Ok(()))) {
+                c.chain_scan["error"] = json!("后台测试未完成，请重试。");
+            }
+            if mode == "full" && !cancelled && c.chain_scan["error"].is_null() {
+                c.chain_scan["cacheUsable"] = json!(true);
+                c.chain_scan["baselineReady"] = json!(c.chain_scan["baselineEligible"] == true);
+                c.chain_scan["autoNetworkUncertain"] = json!(false);
+            }
+            c.refresh_maintenance_candidates(!automatic);
+            c.chain_scan["baselineReady"] = json!(chain_automatic::baseline_ready(&c));
+            if c.save_chain_cache().is_err() {
+                c.chain_scan["error"] = json!("测试结果暂未保存，请检查数据目录。");
+            }
+        }
     });
     Ok(reply)
 }

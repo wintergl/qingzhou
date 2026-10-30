@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct RootTabView: View {
+    @EnvironmentObject private var appState: SplitVpnAppState
+    @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         TabView {
             ConnectScreen()
@@ -29,5 +31,14 @@ struct RootTabView: View {
                 }
         }
         .tint(VPNTheme.accent)
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            while !Task.isCancelled {
+                await appState.refreshVPNStatus()
+                await appState.updateDueSubscriptions()
+                let seconds: UInt64 = appState.isTunnelRunning && !ProcessInfo.processInfo.isLowPowerModeEnabled ? 3 : 15
+                try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
+            }
+        }
     }
 }

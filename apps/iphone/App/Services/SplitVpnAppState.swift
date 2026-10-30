@@ -23,12 +23,23 @@ final class SplitVpnAppState: ObservableObject {
     @Published var isRuleSetUpdating = false
     @Published var isBusy = false
     @Published var notice: String?
+    @Published var mobileConnectivity: [String: Any] = [:]
+    @Published var mobileWebsites: [[String: Any]] = []
+    @Published var currentExitRisk: [String: Any] = [:]
+    @Published var mobileDiagnosticsRunning = false
+    var automaticDiagnosticContext = ""
+    var automaticDiagnosticNetworkEpoch = ""
+    var dueSubscriptionAttempt = Date.distantPast
+    @Published var subscriptions: [ManagedSubscription] = []
+    @Published var corePreferences: [String: Any] = [:]
+    @Published var nodeGroups: [ManagedNodeGroup] = []
 
-    private let store: AppGroupStore
-    private let core: CoreClient
-    private let subscriptionService: SubscriptionService
+    lazy var company = MobileCompanyStore(appState: self)
+    let store: AppGroupStore
+    let core: CoreClient
+    let subscriptionService: SubscriptionService
     private let ruleSetUpdateService: RuleSetUpdateService
-    private let vpnManager: SplitVpnVPNManager
+    let vpnManager: SplitVpnVPNManager
 
     var isTunnelRunning: Bool {
         switch runtimeStatus.state {
@@ -301,16 +312,15 @@ final class SplitVpnAppState: ObservableObject {
         } catch {
             notice = error.localizedDescription
         }
+        scheduleMobileDiagnostics()
     }
 
-    private func regenerateConfig() async throws {
+    func regenerateConfig() async throws {
         let geoRoutingResources = try store.installBundledGeoRoutingResources()
-        let generated = try await core.generateTunnelConfig(
-            settings: settings,
-            domains: domains,
-            geoRoutingResources: geoRoutingResources
-        )
-        try store.saveGeneratedConfig(generated)
+        try await MobileCoreBridge.withTransaction(root: store.url("core")) {
+            let generated = try await core.generateTunnelConfig(settings: settings, domains: domains, geoRoutingResources: geoRoutingResources)
+            try store.saveGeneratedConfig(generated)
+        }
     }
 
     private func applyRoutingChange(_ summary: String) {
@@ -328,9 +338,7 @@ final class SplitVpnAppState: ObservableObject {
     /// Writes the core's subscription summary and node list into the App Group
     /// mirrors the UI and packet tunnel diagnostics read.
     private func syncSubscriptionMirrors() async throws {
-        let status = try await core.subscriptionStatus()
-        try store.saveSubscription(CoreClient.subscriptionRecord(from: status))
-        try store.saveNodes(try await core.nodes())
+        try await refreshManagedState()
     }
 
     /// Moves a URL and provider text saved before the Rust core existed into
@@ -361,7 +369,7 @@ final class SplitVpnAppState: ObservableObject {
         }
     }
 
-    private func noteRestartIfTunnelRunning(_ summary: String) {
+    func noteRestartIfTunnelRunning(_ summary: String) {
         if isTunnelRunning {
             notice = "\(summary)；当前 VPN 需要断开后重新连接才会生效"
             appendLog(level: "warn", message: "\(summary); reconnect required for active tunnel")

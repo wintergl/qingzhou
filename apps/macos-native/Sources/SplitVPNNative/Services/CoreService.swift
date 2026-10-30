@@ -99,6 +99,22 @@ final class CoreService: ObservableObject {
             }
         }
         try start()
+        // Re-enabling needs the saved credential even while persisted enabled
+        // is false. Disabling must remain possible with a locked keychain.
+        if (channel == "static-exit:set-enabled" && payload["enabled"] as? Bool == true) || ["chain-scan:start", "chain-scan:use"].contains(channel),
+           let saved = try await StaticExitKeychain.load() {
+            _ = try await requestValue("static-exit:credential", payload: ["configuration": saved.configuration.payload, "password": saved.password])
+        }
+        // Restore before any action which compiles/reloads a route. Read-only
+        // snapshots and stop remain usable if the keychain is locked.
+        if ["vpn:start", "native:startup-connect", "nodes:select", "nodes:select-v2",
+            "routing:update", "routing:add-rule", "routing:edit-rule", "routing:delete-rule",
+            "native:preferences", "static-exit:test", "chain-scan:start", "chain-scan:connect", "chain-scan:use"].contains(channel) {
+            let needed = try await requestValue("static-exit:needs-credential")
+            if case .bool(true) = needed, let saved = try await StaticExitKeychain.load() {
+                _ = try await requestValue("static-exit:credential", payload: ["configuration": saved.configuration.payload, "password": saved.password])
+            }
+        }
         let timeout = timeout ?? Self.timeout(for: channel)
         return try await withCheckedThrowingContinuation { continuation in
             let id = UUID().uuidString
@@ -112,7 +128,7 @@ final class CoreService: ObservableObject {
                 if snapshot {
                     self.availability = .unavailable(message)
                     callback.resume(throwing: CoreError.transport(message))
-                } else { callback.resume(throwing: CoreError.message(message)) }
+                } else { callback.resume(throwing: channel == "chain-scan:use" ? CoreError.uncertain(message) : CoreError.message(message)) }
             }
             do {
                 var data = try JSONSerialization.data(withJSONObject: ["id": id, "channel": channel, "payload": payload])
@@ -159,9 +175,9 @@ final class CoreService: ObservableObject {
     }
     private struct ErrorPayload: Decodable { var message: String? }
     enum CoreError: LocalizedError {
-        case message(String), transport(String)
+        case message(String), transport(String), uncertain(String)
         var errorDescription: String? {
-            switch self { case .message(let message), .transport(let message): return message }
+            switch self { case .message(let message), .transport(let message), .uncertain(let message): return message }
         }
     }
 }

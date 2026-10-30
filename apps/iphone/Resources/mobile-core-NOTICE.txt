@@ -1,0 +1,11 @@
+Qingzhou mobile network components
+
+companymobile reuses zju-connect (AGPL-3.0), upstream revision
+923672dc927e43e04592595a0005ad90a7a3afb5, with Qingzhou reviewed patches.
+https://github.com/Mythologyli/zju-connect
+The iOS combined runtime also includes sing-box (GPL-3.0-or-later).
+https://github.com/SagerNet/sing-box
+
+Matching source, local dependency lock manifests, patches and build commands
+are distributed beside the local candidate packages in mobile-core-source.zip.
+See the repository packages/company-vpn/mobile/README.md for integration details.

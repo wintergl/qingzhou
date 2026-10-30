@@ -6,6 +6,8 @@ use std::time::Duration;
 pub struct RuntimeEnvironment {
     pub sleeping: bool,
     pub low_power: bool,
+    /// None means the desktop shell has not reported the power source yet.
+    pub on_battery: Option<bool>,
     pub network_events: bool,
     /// None keeps clients that predate visibility reporting compatible.
     pub visible: Option<bool>,

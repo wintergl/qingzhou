@@ -18,6 +18,7 @@ pub struct Plan {
     pub config: Value,
     pub routes: Vec<String>,
     pub rule_count: usize,
+    pub policy: Vec<Value>,
 }
 #[derive(Clone, Copy)]
 struct Block {
@@ -191,11 +192,26 @@ pub fn compile(base: Value, port: u16, name: &str, rows: &Value) -> Result<Plan>
 }
 
 pub fn compile_with_underlay(
+    base: Value,
+    port: u16,
+    name: &str,
+    rows: &Value,
+    protected_networks: &[String],
+) -> Result<Plan> {
+    compile_inner(base, port, name, rows, protected_networks, true)
+}
+
+pub(crate) fn compile_mobile(base: Value, port: u16, name: &str, rows: &Value) -> Result<Plan> {
+    compile_inner(base, port, name, rows, &[], false)
+}
+
+fn compile_inner(
     mut base: Value,
     port: u16,
     name: &str,
     rows: &Value,
     protected_networks: &[String],
+    system_tun: bool,
 ) -> Result<Plan> {
     ensure!(
         port > 0
@@ -206,9 +222,10 @@ pub fn compile_with_underlay(
         "私有网络隧道出口无效。"
     );
     ensure!(
-        base["mode"] == "rule"
-            && base["tun"]["enable"] == true
-            && base["tun"]["auto-route"] == true,
+        !system_tun
+            || (base["mode"] == "rule"
+                && base["tun"]["enable"] == true
+                && base["tun"]["auto-route"] == true),
         "私有网络统一分流需要启用 TUN 和规则模式。"
     );
     let rows = rows.as_array().context("授权资源格式无效。")?;
@@ -220,6 +237,7 @@ pub fn compile_with_underlay(
     let mut deny = Vec::new();
     let mut routes = Vec::new();
     let mut domains = Vec::new();
+    let mut policy = Vec::new();
     for row in rows {
         let address = row["address"].as_str().context("授权地址格式无效。")?;
         let network = row["network"]
@@ -237,6 +255,9 @@ pub fn compile_with_underlay(
         );
         let ports = ports(rawports)?;
         for (rule, cidr, domain) in addresses(address)? {
+            if !system_tun {
+                policy.push(json!({"match":rule,"ports":ports,"tcp":network != "udp"}));
+            }
             if let Some(cidr) = &cidr {
                 routes.push(cidr.clone());
             }
@@ -279,6 +300,19 @@ pub fn compile_with_underlay(
             .filter_map(|r| r.as_str().map(str::to_owned)),
     );
     base["rules"] = json!(rules);
+    if let Some(sniffer) = base["sniffer"].as_object_mut() {
+        let mut skip = sniffer
+            .get("skip-dst-address")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for route in &routes {
+            if !skip.contains(&json!(route)) {
+                skip.push(json!(route));
+            }
+        }
+        sniffer.insert("skip-dst-address".into(), json!(skip));
+    }
     if !base["proxies"].is_array() {
         base["proxies"] = json!([]);
     }
@@ -337,6 +371,7 @@ pub fn compile_with_underlay(
         config: base,
         routes,
         rule_count: count,
+        policy,
     })
 }
 

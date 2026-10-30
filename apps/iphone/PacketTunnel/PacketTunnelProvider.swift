@@ -9,6 +9,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private let networkChangeQueue = DispatchQueue(label: "split-vpn.packet-tunnel.control", qos: .utility)
     // A stuck native operation must not prevent stop, deadlines or OS callbacks.
     private let coreQueue = DispatchQueue(label: "split-vpn.packet-tunnel.core", qos: .utility)
+    private lazy var company = CompanyTunnelService { [weak self] in
+        self?.networkChangeQueue.async { [weak self] in
+            guard let self, self.recovery.wanted else { return }
+            self.recovery.request(now: self.now); self.updateState(.connecting, message: "正在应用接入分流"); self.scheduleRecovery()
+        }
+    }
     private var dataPlane: TunnelDataPlane?
     private var networkChangeMonitor: Network.NWPathMonitor?
     private var pendingNetworkRecovery: DispatchWorkItem?
@@ -22,6 +28,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     private var dataPlaneHealthMonitor = DataPlaneHealthMonitor(cooldown: 0)
     private let runtimeStatusLock = NSLock()
     private var latestRuntimeStatus: RuntimeStatus = .disconnected
+    private var appliedConfigurationRevision: String?
     private var lastCheckpointStatus: RuntimeStatus?
     private var lastCheckpointAt: Date?
     private var now: TimeInterval { ProcessInfo.processInfo.systemUptime }
@@ -70,7 +77,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                     guard self.sessionID == session, self.recovery.wanted else { return }
                     if let error { self.finishStart(error: error); return }
                     self.coreQueue.async {
-                        let result = Result { try plane.start() }
+                        let result = Result { try self.company.prepareConfiguration(); try plane.start() }
                         self.networkChangeQueue.async {
                             guard self.sessionID == session, self.recovery.wanted else { return }
                             switch result {
@@ -94,6 +101,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             if let plane = dataPlane { coreQueue.async { plane.stop() } }
             dataPlane = nil
         } else {
+            appliedConfigurationRevision = dataPlane?.configurationRevision
+            company.applied(appliedConfigurationRevision)
             recovery.heartbeat(now: now)
             updateState(.connected)
             startNetworkChangeMonitor()
@@ -109,6 +118,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         let completion = TunnelCompletion<Void> { _ in completionHandler() }
         networkChangeQueue.async {
             self.recovery.stop()
+            self.company.stop()
             self.sessionID = UUID()
             self.stopMonitors()
             self.startCompletion?.finish(TunnelDataPlaneError.providerReleased)
@@ -147,6 +157,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         networkChangeQueue.async { [self] in
             guard self.recovery.wanted else { return }
             guard self.recovery.wake(now: self.now) else { return }
+            self.company.networkChanged()
             self.dataPlaneHealthMonitor.resetSamples()
             self.applyPowerState()
             self.updateState(.connecting, message: "正在恢复网络连接")
@@ -159,9 +170,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
     }
 
     override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        completionHandler?(try? encoder.encode(currentRuntimeStatus()))
+        if let message = (try? JSONSerialization.jsonObject(with: messageData)) as? [String: Any], (message["op"] as? String)?.hasPrefix("company.") == true {
+            company.handle(message) { response in completionHandler?(try? JSONSerialization.data(withJSONObject: response)) }
+            return
+        }
+        networkChangeQueue.async { [self] in
+            if String(data: messageData, encoding: .utf8) == "reload-config", recovery.wanted {
+                recovery.request(now: now)
+                updateState(.connecting, message: "正在应用配置")
+                scheduleRecovery()
+            }
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .iso8601
+            completionHandler?(try? encoder.encode(currentRuntimeStatus()))
+        }
     }
 
     private func makeNetworkSettings(mtu: Int) -> NEPacketTunnelNetworkSettings {
@@ -172,7 +194,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             subnetMasks: [TunnelAddressing.ipv4SubnetMask]
         )
         ipv4.includedRoutes = [NEIPv4Route.default()]
-        ipv4.excludedRoutes = DefaultRules.networkExtensionExcludedIPv4Routes.map { route in
+        ipv4.excludedRoutes = DefaultRules.networkExtensionExcludedIPv4Routes.filter { ["169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32"].contains($0.cidr) }.map { route in
             NEIPv4Route(destinationAddress: route.destinationAddress, subnetMask: route.subnetMask)
         }
         settings.ipv4Settings = ipv4
@@ -217,7 +239,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             vpnDomains: storedConfig?.vpnDomains ?? store.readDomains().domains,
             generatedAt: Date(),
             yaml: storedConfig?.yaml ?? "",
-            singBoxJSON: configContent
+            singBoxJSON: configContent,
+            runtimeRevision: storedConfig?.runtimeRevision
         )
     }
 
@@ -246,6 +269,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             self.recovery.setNetwork(available: next.isSatisfied, changed: changed,
                                      identity: next.recoveryIdentity, now: self.now)
             guard changed else { return }
+            self.company.networkChanged()
             // Only the transport is logged, never local IP/interface fingerprints.
             self.store.appendLog(level: "info", message: "Upstream changed: \(next.summary)")
             self.dataPlaneHealthMonitor.resetSamples()
@@ -288,8 +312,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         updateState(.connecting, message: "正在自动重连（第 \(recovery.attempts) 次）")
         dataPlaneHealthMonitor.resetSamples()
         armDeadline(seconds: 20) { [weak self] in self?.handoffToSystem(reason: "core_unresponsive") }
-        coreQueue.async {
-            let result = Result { try plane.restart() }
+        setTunnelNetworkSettings(makeNetworkSettings(mtu: plane.desiredMTU)) { settingsError in
+          self.coreQueue.async {
+            let result = Result { if let settingsError { throw settingsError }; try self.company.prepareConfiguration(); try plane.restart() }
             self.networkChangeQueue.async {
                 guard self.sessionID == session,
                       self.recovery.finish(token: token, success: (try? result.get()) != nil, now: self.now) else { return }
@@ -297,6 +322,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 self.operationDeadline = nil
                 switch result {
                 case .success:
+                    self.appliedConfigurationRevision = plane.configurationRevision
+                    self.company.applied(self.appliedConfigurationRevision)
                     self.store.appendLog(level: "info", message: "Tunnel core restarted")
                     if !self.recovery.pending && self.recovery.networkAvailable {
                         self.reasserting = false
@@ -310,6 +337,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
                 }
                 self.scheduleRecovery()
             }
+          }
         }
     }
 
@@ -428,7 +456,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
             startedAt: latestRuntimeStatus.startedAt,
             lastError: latestRuntimeStatus.lastError,
             bytesIn: snapshot.bytesIn,
-            bytesOut: snapshot.bytesOut
+            bytesOut: snapshot.bytesOut,
+            configurationRevision: latestRuntimeStatus.configurationRevision,
+            networkEpoch: latestRuntimeStatus.networkEpoch
         )
         latestRuntimeStatus = next
         shouldCheckpoint = RuntimeStatusCheckpointPolicy.shouldCheckpoint(
@@ -448,7 +478,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider, @unchecked Sendable {
         }
     }
 
-    private func updateRuntimeStatus(_ status: RuntimeStatus, forceCheckpoint: Bool = false) {
+    private func updateRuntimeStatus(_ input: RuntimeStatus, forceCheckpoint: Bool = false) {
+        var status = input
+        status.configurationRevision = appliedConfigurationRevision
+        status.networkEpoch = "\(sessionID):\(recovery.generation)"
         let now = Date()
         var shouldCheckpoint = forceCheckpoint
 

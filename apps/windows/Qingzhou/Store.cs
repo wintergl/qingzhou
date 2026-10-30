@@ -14,7 +14,7 @@ public sealed record GroupInfo(string Id, string Name, string RuntimeName, bool 
 }
 
 /// App state shared by every page; mirrors VPNStore on macOS.
-public sealed class Store
+public sealed partial class Store
 {
     public readonly ICoreClient Core;
     readonly Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
@@ -27,6 +27,8 @@ public sealed class Store
     DesktopActivity? pendingEnvironment;
     Task environmentPump = Task.CompletedTask;
     long networkGeneration, statusGeneration, operationGeneration;
+    long statusRevision, nodesRevision, riskRevision;
+    bool readingNodes;
 
     public Store(ICoreClient? core = null) => Core = core ?? new CoreClient();
     public DesktopActivity Activity { get; private set; } = new();
@@ -38,6 +40,8 @@ public sealed class Store
     public JsonNode? Traffic { get; private set; }
     public JsonNode? Connectivity { get; private set; }
     public JsonNode? Websites { get; private set; }
+    public JsonNode? CurrentExitRisk { get; private set; }
+    public string? NodesError { get; private set; }
     public JsonNode? Diagnostics { get; private set; }
     public bool SpeedBatchRunning { get; private set; }
     public string? SpeedTestingNode { get; private set; }
@@ -135,9 +139,9 @@ public sealed class Store
     public string DisplaySelectedProxy => Groups.FirstOrDefault(g => g.RuntimeName.Length > 0 && g.RuntimeName == SelectedProxy)?.Name ?? SelectedProxy;
     public HashSet<string> Favorites => Settings.At("favoriteNodeNames").Strings().ToHashSet();
     public IEnumerable<JsonNode> ProviderNodes => Nodes.Where(n => n.At("identityKey").Str() is not null);
-    public JsonNode? CurrentRisk => Risks.FirstOrDefault(r => r.At("nodeName").Str() == SelectedProxy);
+    public JsonNode? CurrentRisk => CurrentExitRisk;
     public bool CanMutate => !stopped && StatusKnown && !PreviewOnly && Busy is null && connectionState != VPNTrayState.Disconnecting;
-    public bool CanDisconnect => !stopped && StatusKnown && !PreviewOnly && !ConnectionProtected
+    public bool CanDisconnect => !stopped && (StatusKnown || connectionState == VPNTrayState.Connecting) && !PreviewOnly && !ConnectionProtected
         && (ConnectionRequested || connectionState == VPNTrayState.Connecting) && connectionState != VPNTrayState.Disconnecting;
     public bool CanControlConnection => CanDisconnect || CanMutate;
     public bool ConnectionProtected => LegacyOwner && Running && !OwnsRuntime;
@@ -218,6 +222,7 @@ public sealed class Store
         networkGeneration++;
         Connectivity = null;
         Websites = null;
+        CurrentExitRisk = null;
         Traffic = null;
     }
 
@@ -311,9 +316,12 @@ public sealed class Store
         static string Clock(string? stamp) => DateTimeOffset.TryParse(stamp, out var value) ? value.ToLocalTime().ToString("HH:mm:ss") : "尚未检测";
         var source = record.At("source").Str() == "automatic" ? "自动检测" : "手动检测";
         var first = record.At("state").Str() == "running" ? $"{source}中…" : record.At("checkedAt").Str() is { } at ? $"{source} · {Clock(at)}" : "等待首次检测";
-        if (record.At("state").Str() == "stale") first += " · 已过期";
+        var stale = record.At("state").Str() == "stale" || record.At("staleResult").Bool() == true;
+        if (stale) first += " · 历史结果";
         var next = Diagnostics.At("pausedReason").Str() switch {
             "sleeping" => "休眠期间暂停", "recovering" => "连接恢复后继续检测", "disconnected" => "连接后自动检测", "node-test" => "节点检测结束后继续自动检查",
+            _ when record.At("state").Str() == "running" => stale ? "正在更新本次连接的检测结果" : "结果将在这里自动更新",
+            _ when record.At("nextCheckAt").Str() is not null && (record.At("checkedAt").Str() is null || stale) => "连接已就绪，即将自动检测",
             _ => record.At("nextCheckAt").Str() is { } stamp ? $"下次 {Clock(stamp)} · 每 {(record.At("intervalSeconds").Num() ?? 300)/60:0} 分钟" : "连接检测每 5 分钟 · 站点测速每 15 分钟",
         };
         return $"{first}\n{next}";
@@ -333,6 +341,31 @@ public sealed class Store
     }
     void OnEvent(string name, JsonNode? data)
     {
+        if (name == "chain-scan:use-status") { ReceiveChainUse(data); return; }
+        if (name == "nodes:updated")
+        {
+            var revision = (long?)data.At("viewRevision").Num();
+            if (revision is { } old && old < nodesRevision) return;
+            nodesRevision = revision ?? nodesRevision;
+            NodesError = data.At("error").Str();
+            Nodes = data.At("nodes").Items().ToList();
+            if (NodesError is not null) { statusReadFailed = true; CurrentExitRisk = null; statusRevision = Math.Max(statusRevision, revision ?? 0); statusGeneration++; }
+            if (Status is JsonObject status)
+            {
+                if (data.At("settings") is { } settings) { status["settings"] = settings.DeepClone(); statusRevision = Math.Max(statusRevision, revision ?? 0); }
+                if (data.At("subscription") is { } subscription) status["subscription"] = subscription.DeepClone();
+            }
+            Groups = BuildGroups(data.At("groups"));
+            Notify(); return;
+        }
+        if (name == "risk:current-updated")
+        {
+            var revision = (long?)data.At("viewRevision").Num();
+            if (revision is { } old && old < riskRevision) return;
+            riskRevision = revision ?? riskRevision;
+            CurrentExitRisk = data.At("result");
+            Notify(); return;
+        }
         if (name == "diagnostics:updated") { ApplyDiagnostics(data); Notify(); return; }
         if (name == "nodes:speed-progress")
         {
@@ -365,7 +398,11 @@ public sealed class Store
         }
         if (name == "vpn:status")
         {
+            var revision = (long?)data.At("viewRevision").Num();
+            if (revision is { } old && old < statusRevision) return;
+            statusRevision = revision ?? statusRevision;
             if (Status is JsonObject status && data is not null) { status["mihomo"] = data; statusGeneration++; }
+            if (!Running || Recovering) CurrentExitRisk = null;
             Notify();
             return;
         }
@@ -417,10 +454,15 @@ public sealed class Store
         {
             var data = await Core.Request("native:bootstrap");
             if (stopped || operation != operationGeneration || confirmation != statusGeneration) return;
+            var revision = (long?)data.At("viewRevision").Num();
+            if (revision is { } old && old < statusRevision) return;
+            statusRevision = revision ?? statusRevision;
             Status = data.At("status");
             statusReadFailed = Status is null;
             statusGeneration++;
-            Nodes = data.At("nodes").Items().ToList();
+            var applyNodes = revision is null || revision >= nodesRevision;
+            if (applyNodes) { nodesRevision = revision ?? nodesRevision; Nodes = data.At("nodes").Items().ToList(); NodesError = null; }
+            if (revision is null || revision >= riskRevision) { riskRevision = revision ?? riskRevision; CurrentExitRisk = data.At("currentExitRisk"); }
             Risks = data.At("risks").Items().ToList();
             Traffic = data.At("traffic");
             ApplyDiagnostics(data.At("diagnostics"));
@@ -428,7 +470,7 @@ public sealed class Store
             LegacyOwner = data.At("legacyOwnerRunning").Bool() == true;
             OwnsRuntime = data.At("ownsRuntime").Bool() == true;
             DataDir = data.At("dataDir").Str() ?? "";
-            Groups = BuildGroups(data.At("groups"));
+            if (applyNodes) Groups = BuildGroups(data.At("groups"));
             OnCompanyRouting?.Invoke(data.At("companyRouting"));
         }
         catch (Exception e)
@@ -437,6 +479,18 @@ public sealed class Store
             statusReadFailed = true;
             statusGeneration++;
             OnCompanyRouting?.Invoke(null);
+            var fallbackGeneration = statusGeneration;
+            try
+            {
+                var latest = await Core.Request("vpn:get-status");
+                var revision = (long?)latest.At("mihomo").At("viewRevision").Num();
+                if (!stopped && operation == operationGeneration && fallbackGeneration == statusGeneration
+                    && latest.At("mihomo") is not null && (revision is null || revision >= statusRevision))
+                {
+                    Status = latest; statusReadFailed = false; statusRevision = revision ?? statusRevision; statusGeneration++;
+                }
+            }
+            catch { /* A failed critical read keeps the connection unknown. */ }
             if (showError) Fail(e.Message);
         }
         finally
@@ -444,6 +498,25 @@ public sealed class Store
             refreshing = false;
             Notify();
         }
+    }
+
+    public async Task RefreshNodes()
+    {
+        if (stopped || transportClosed || PreviewOnly || readingNodes) return;
+        readingNodes = true;
+        var operation = operationGeneration; var revision = nodesRevision;
+        try
+        {
+            var result = await Core.Request("nodes:list");
+            if (stopped || operation != operationGeneration || revision != nodesRevision) return;
+            Nodes = result.Items().ToList(); NodesError = null;
+        }
+        catch (Exception error)
+        {
+            if (stopped || operation != operationGeneration || revision != nodesRevision) return;
+            NodesError = error.Message; Nodes = [];
+        }
+        finally { readingNodes = false; Notify(); }
     }
 
     List<GroupInfo> BuildGroups(JsonNode? runtime)
@@ -491,10 +564,11 @@ public sealed class Store
             Traffic = traffic;
             Notify(trafficOnly: true);
         }
-        catch
+        catch (Exception error)
         {
             if (!stopped && generation == networkGeneration && confirmation == statusGeneration)
             {
+                if (Traffic is JsonObject previous) previous["error"] = $"流量读取失败，显示上次结果：{error.Message}";
                 statusReadFailed = true;
                 statusGeneration++;
                 OnCompanyRouting?.Invoke(null);
@@ -535,6 +609,7 @@ public sealed class Store
     {
         if (!(channel == "vpn:stop" ? CanDisconnect : CanMutate)) { Fail("服务尚未就绪或已有操作正在进行，请稍后重试。"); return; }
         var generation = ++operationGeneration;
+        if (channel is "vpn:start" or "vpn:stop") ChainUse = null;
         if (channel == "vpn:stop") { networkGeneration++; Connectivity = null; Websites = null; }
         Busy = title;
         connectionState = channel switch { "vpn:start" => VPNTrayState.Connecting, "vpn:stop" => VPNTrayState.Disconnecting, _ => null };

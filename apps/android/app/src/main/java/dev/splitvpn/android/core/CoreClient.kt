@@ -35,6 +35,10 @@ class CoreClient(private val paths: SplitVpnPaths) {
         call(channel, payload) as? JSONObject ?: throw CoreException("CORE_BAD_REPLY", "核心返回格式无效：$channel")
 
     fun subscriptionStatus(): JSONObject = obj("subscription:get-status")
+    fun ensureSettings(settings: SettingsRepository) {
+        if (!java.io.File(paths.appDataDir, "settings.json").isFile) call("settings:patch", JSONObject()
+            .put("selectedProxy", settings.getSelectedProxy()).put("unknownTraffic", settings.getUnknownTraffic()).put("vpnDomainRules", JSONArray(settings.getVpnDomainRules())))
+    }
 
     /** Saves the single Android subscription URL into the first core entry and returns its id. */
     fun saveSubscription(url: String): String {
@@ -49,7 +53,8 @@ class CoreClient(private val paths: SplitVpnPaths) {
         return (0 until list.length()).mapNotNull { index ->
             val node = list.optJSONObject(index) ?: return@mapNotNull null
             val name = node.optString("name").takeIf { it.isNotEmpty() } ?: return@mapNotNull null
-            ProviderNode(name, node.optString("type"))
+            ProviderNode(name, node.optString("type"), node.optString("identityKey").takeIf { it.isNotEmpty() },
+                node.optString("subscriptionId").takeIf { it.isNotEmpty() }, node.optString("subscriptionName").takeIf { it.isNotEmpty() }, node.optBoolean("identityAmbiguous"))
         }
     }
 
@@ -62,7 +67,13 @@ class CoreClient(private val paths: SplitVpnPaths) {
                 .put("unknownTraffic", settings.getUnknownTraffic())
                 .put("vpnDomainRules", JSONArray(settings.getVpnDomainRules()))
         )
-        val out = obj("mihomo:generate", JSONObject().put("mixedPort", MIXED_PORT).put("controllerPort", CONTROLLER_PORT))
+        val preferences = obj("settings:get")
+        settings.syncFromCore(preferences)
+        val payload = JSONObject().put("mixedPort", MIXED_PORT).put("controllerPort", CONTROLLER_PORT)
+        if (!preferences.optJSONObject("staticExit")?.optString("server").isNullOrEmpty()) settings.getStaticExitCredential()?.let { payload.put("exitCredential", it) }
+        MobileCompany.activeDescriptor()?.let { payload.put("companyTunnel",it) }
+        payload.put("companyConnectionRequested",MobileCompany.connectionRequested())
+        val out = obj("mihomo:generate", payload)
         return MihomoConfig(
             homeDir = out.getString("home"),
             configFile = out.getString("config"),
@@ -71,7 +82,8 @@ class CoreClient(private val paths: SplitVpnPaths) {
             providerCount = out.optInt("providerCount"),
             selectedProxy = out.getString("selectedProxy"),
             selectionValid = out.getBoolean("selectionValid"),
-            selectionError = out.optString("selectionError")
+            selectionError = out.optString("selectionError"),
+            runtimeRevision = out.optString("runtimeRevision")
         )
     }
 
@@ -99,5 +111,6 @@ data class MihomoConfig(
     val providerCount: Int,
     val selectedProxy: String,
     val selectionValid: Boolean,
-    val selectionError: String
+    val selectionError: String,
+    val runtimeRevision: String = ""
 )

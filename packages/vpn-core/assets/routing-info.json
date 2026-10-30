@@ -9,7 +9,7 @@
     "geosite": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geosite.dat",
     "mmdb": "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/country.mmdb"
   },
-  "quicRejectRule": "微信优先直连、失败时经 VPN 兜底；其他 UDP/443 按节点能力走 VPN 或 REJECT",
+  "quicRejectRule": "国内连接优先直连；其余微信连接直连检测失败时经代理兜底，启用静态 ISP 时回退到该出口；其他 UDP/443 按节点能力走 VPN 或 REJECT",
   "ruleOrder": [
     {
       "label": "局域网",
@@ -17,9 +17,14 @@
       "policy": "DIRECT"
     },
     {
-      "label": "微信",
-      "rule": "PROCESS-NAME,WeChat,WECHAT / PROCESS-NAME,WeChatAppEx,WECHAT / PROCESS-NAME,WeChatAppEx Helper,WECHAT",
-      "policy": "DIRECT -> VPN"
+      "label": "VPN 列表",
+      "rule": "RULE-SET,vpn-domains,VPN",
+      "policy": "VPN"
+    },
+    {
+      "label": "邮箱大师直连优先",
+      "rule": "PROCESS-NAME,MailMaster / MailMaster.exe / mailmaster.exe",
+      "policy": "DIRECT（可在兼容设置中关闭）"
     },
     {
       "label": "国内域名",
@@ -32,14 +37,14 @@
       "policy": "DIRECT"
     },
     {
+      "label": "微信兼容回退",
+      "rule": "PROCESS-NAME,WeChat,WECHAT / PROCESS-NAME,WeChatAppEx,WECHAT / PROCESS-NAME,WeChatAppEx Helper,WECHAT",
+      "policy": "DIRECT -> VPN / 静态 ISP"
+    },
+    {
       "label": "其他 QUIC",
       "rule": "AND,((NETWORK,UDP),(DST-PORT,443)),VPN / AND,((NETWORK,UDP),(DST-PORT,443)),REJECT",
       "policy": "VPN / REJECT"
-    },
-    {
-      "label": "VPN 列表",
-      "rule": "RULE-SET,vpn-domains,VPN",
-      "policy": "VPN"
     },
     {
       "label": "内置国外",

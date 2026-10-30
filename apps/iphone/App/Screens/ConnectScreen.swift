@@ -2,14 +2,15 @@ import SwiftUI
 
 struct ConnectScreen: View {
     @EnvironmentObject private var appState: SplitVpnAppState
-    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 14) {
+                VStack(spacing: 18) {
                     heroCard
                     overviewGrid
+                    networkCheckCard
                     readinessCard
 
                     if let notice = appState.notice {
@@ -30,19 +31,33 @@ struct ConnectScreen: View {
                         }
                     }
                 }
-                .padding(16)
+                .padding(20)
+                .frame(maxWidth: 680)
+                .frame(maxWidth: .infinity)
             }
             .background(VPNTheme.background)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
             .navigationTitle(AppBrand.name)
             .refreshable {
                 await appState.refreshVPNStatus()
             }
-            .task(id: scenePhase) {
-                guard scenePhase == .active else {
-                    return
-                }
-                await pollVPNStatusWhileVisible()
+
+        }
+    }
+
+    private var networkCheckCard: some View {
+        VPNCard {
+            CardHeading(title: "连接与站点检测", systemImage: "network")
+            if appState.mobileDiagnosticsRunning { ProgressView("检测中…") }
+            let result = appState.mobileConnectivity
+            LabeledContent("代理出口", value: (result["proxyOk"] as? Bool).map { $0 ? "正常" : "未通过" } ?? "尚未检测")
+            LabeledContent("实际出口 IP", value: result["externalIp"] as? String ?? "尚未读取")
+            ForEach(Array(appState.mobileWebsites.enumerated()), id: \.offset) { _, row in
+                LabeledContent(row["label"] as? String ?? "站点", value: row["ok"] as? Bool == true ? "\(String(describing: row["delay"] ?? "—")) ms" : "受限或未连通")
             }
+            NavigationLink("查看 DNS、站点与出口风险") { MobileDiagnosticsScreen() }
         }
     }
 
@@ -51,20 +66,19 @@ struct ConnectScreen: View {
     }
 
     private var heroCard: some View {
-        VPNCard {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(statusTitle)
-                        .font(.title2.bold())
-                        .foregroundStyle(VPNTheme.text)
-                    Text(statusDetail)
-                        .font(.subheadline)
-                        .foregroundStyle(VPNTheme.secondary)
-                }
-                Spacer(minLength: 8)
-                StatusPill(title: statusTitle, color: statusColor)
+        VStack(alignment: .leading, spacing: 22) {
+            HStack(spacing: 8) {
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                Text("连接概览").tracking(2)
+                Spacer()
+                Image(systemName: "sailboat").font(.title2)
+            }.font(.caption.weight(.medium)).foregroundStyle(VPNTheme.heroMuted)
+            VStack(alignment: .leading, spacing: 10) {
+                Text(statusTitle).font(.largeTitle.weight(.medium)).tracking(-0.8)
+                    .foregroundStyle(VPNTheme.heroText)
+                Text(statusDetail).font(.subheadline).foregroundStyle(VPNTheme.heroMuted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-
             Button(primaryButtonTitle) {
                 Task {
                     if isActive {
@@ -74,17 +88,18 @@ struct ConnectScreen: View {
                     }
                 }
             }
-            .buttonStyle(VPNButtonStyle(prominent: true, destructive: isActive))
-            .disabled(appState.isBusy)
-        }
+            .buttonStyle(VPNButtonStyle(prominent: !isActive))
+            .disabled(appState.isBusy && !isActive)
+        }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+            .background(VPNTheme.heroInk.gradient, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
     private var overviewGrid: some View {
-        LazyVGrid(columns: [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
-            metric("订阅状态", appState.subscription.status, systemImage: "link")
+        LazyVGrid(columns: dynamicTypeSize.isAccessibilitySize ? [GridItem(.flexible())] : [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)], spacing: 12) {
+            metric("订阅状态", subscriptionStatusTitle(appState.subscription.status), systemImage: "link")
             metric("节点数量", "\(appState.subscription.nodeCount)", systemImage: "point.3.connected.trianglepath.dotted")
             metric("当前节点", appState.settings.selectedProxy, systemImage: "location")
-            metric("未知流量", appState.settings.unknownTrafficPolicy == "vpn" ? "未匹配代理" : "默认直连", systemImage: "arrow.triangle.branch")
+            metric("分流模式", appState.settings.unknownTrafficPolicy == "vpn" ? "默认 VPN" : "默认直连", systemImage: "arrow.triangle.branch")
         }
     }
 
@@ -96,14 +111,15 @@ struct ConnectScreen: View {
             Text(value.isEmpty ? "-" : value)
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(VPNTheme.text)
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.middle)
+                .frame(minHeight: 40, alignment: .topLeading)
         }
     }
 
     private var readinessCard: some View {
         VPNCard {
-            CardHeading(title: "真机状态", systemImage: "checkmark.shield")
+            CardHeading(title: "连接准备", systemImage: "checkmark.shield")
             ForEach(appState.readinessItems) { item in
                 HStack(alignment: .top, spacing: 10) {
                     Image(systemName: iconName(for: item.severity))
@@ -118,22 +134,6 @@ struct ConnectScreen: View {
                     }
                 }
             }
-            Text("TUN \(TunnelAddressing.singBoxTunAddress) · Network Extension + Libbox")
-                .font(.caption2)
-                .foregroundStyle(VPNTheme.secondary)
-        }
-    }
-
-    private var statusColor: Color {
-        switch appState.runtimeStatus.state {
-        case .connected:
-            return VPNTheme.green
-        case .connecting, .disconnecting:
-            return VPNTheme.accent
-        case .error:
-            return VPNTheme.destructive
-        case .disconnected:
-            return VPNTheme.secondary
         }
     }
 
@@ -157,7 +157,7 @@ struct ConnectScreen: View {
         case .connected:
             return "iOS VPN 已启动，当前节点 \(appState.settings.selectedProxy)"
         case .connecting:
-            return "正在请求 iOS 启动 Packet Tunnel"
+            return "正在建立安全连接，请稍候"
         case .disconnecting:
             return "正在关闭系统 VPN"
         case .error:
@@ -196,11 +196,4 @@ struct ConnectScreen: View {
         }
     }
 
-    @MainActor
-    private func pollVPNStatusWhileVisible() async {
-        while !Task.isCancelled {
-            await appState.refreshVPNStatus()
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-        }
-    }
 }

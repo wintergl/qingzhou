@@ -50,6 +50,8 @@ class SplitVpnService : VpnService() {
     private var tunInterface: ParcelFileDescriptor? = null
     private val dataPlaneExecutor = lifecycleExecutor
     private val monitorExecutor = Executors.newSingleThreadScheduledExecutor()
+    private val diagnosticsExecutor = Executors.newSingleThreadExecutor()
+    private var diagnosticsTask: Future<*>? = null
     private val probeExecutor = Executors.newSingleThreadExecutor()
     private var monitorTask: ScheduledFuture<*>? = null
     private var retryTask: ScheduledFuture<*>? = null
@@ -145,6 +147,7 @@ class SplitVpnService : VpnService() {
         }
         monitorExecutor.shutdownNow()
         probeExecutor.shutdownNow()
+        diagnosticsExecutor.shutdownNow()
         dataPlaneExecutor.execute {
             cancelRetry()
             stopDataPlane(markStopped = !preserveErrorState && !runtime.connectWanted())
@@ -281,6 +284,9 @@ class SplitVpnService : VpnService() {
     }
 
     private fun stopDataPlane(markStopped: Boolean, removeForeground: Boolean = true) {
+        dev.splitvpn.android.core.MobileCompany.get(this).serviceStopped()
+        diagnosticsTask?.cancel(true)
+        runCatching { CoreClient(SplitVpnPaths(this)).call("mobile:runtime:invalidate") }
         sessionGeneration++
         monitorTask?.cancel(false)
         monitorTask = null
@@ -407,7 +413,7 @@ class SplitVpnService : VpnService() {
             checkStarting()
             requireDataPlaneAlive()
             appendLog("tun2socks native started pid=$tun2socksPid fd=$tunFd")
-            publishConnected(config.selectedProxy)
+            publishConnected(config.selectedProxy, config.runtimeRevision)
             startDataPlaneMonitor()
         } catch (error: InterruptedException) {
             Thread.interrupted()
@@ -428,14 +434,23 @@ class SplitVpnService : VpnService() {
         if (stopRequested || destroyed || !gate.accepts(operationRevision) || Thread.currentThread().isInterrupted) throw InterruptedException()
     }
 
-    private fun publishConnected(selectedProxy: String) = synchronized(commandLock) {
+    private fun publishConnected(selectedProxy: String, revision: String) = synchronized(commandLock) {
         checkStarting()
-        RuntimeStatusRepository(this).markConnected(selectedProxy, tun2socksPid)
+        RuntimeStatusRepository(this).markConnected(selectedProxy, tun2socksPid, revision)
         recovery.connected(SystemClock.elapsedRealtime())
         recoveryEvents.finish(operationRecoveryToken)
         operationRecoveryToken = null
         healthProbePolicy.reset()
         updateNotification("轻舟已连接：$selectedProxy")
+        dev.splitvpn.android.core.MobileCompany.get(this).serviceReady()
+        diagnosticsTask?.cancel(true)
+        if (!uiVisible) diagnosticsTask = diagnosticsExecutor.submit {
+            if (!destroyed && !stopRequested && runtime.get().state == RuntimeStatusRepository.STATE_CONNECTED) {
+                val diagnostics = dev.splitvpn.android.core.MobileDiagnostics(CoreClient(SplitVpnPaths(this)),runtime)
+                runCatching { diagnostics.connectivity() }
+                if (!Thread.currentThread().isInterrupted) runCatching { diagnostics.websites() }
+            }
+        }
     }
 
     private fun requireDataPlaneAlive() {
@@ -629,7 +644,7 @@ class SplitVpnService : VpnService() {
         checkStarting()
         requireDataPlaneAlive()
         require(MihomoControllerClient.currentProxyName() == config.selectedProxy) { "Mihomo 未应用所选节点。" }
-        publishConnected(config.selectedProxy)
+        publishConnected(config.selectedProxy, config.runtimeRevision)
     }
 
     private fun establishTun(): ParcelFileDescriptor {
@@ -644,7 +659,7 @@ class SplitVpnService : VpnService() {
         try {
             builder.addDisallowedApplication(packageName)
         } catch (error: Exception) {
-            appendLog("排除本应用流量失败，可能出现代理回环：${error.message}")
+            throw IllegalStateException("无法排除接入内核的物理网络流量，已停止以避免代理回环", error)
         }
 
         // MMS binds its sockets to the carrier network. Keep the default SMS

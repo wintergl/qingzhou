@@ -85,6 +85,9 @@ final class MenuCoreModel {
         if let (failed, error) = failure, failed == channel { throw error }
         switch channel {
         case "native:bootstrap": return try bootstrap()
+        case "nodes:list":
+            guard case .object(let fields) = try bootstrap() else { return .array([]) }
+            return fields["nodes"] ?? .array([])
         case "native:startup-connect": return .object(["startupOutcome": .string("already-running"), "mihomo": state])
         case "vpn:start", "vpn:stop": running = channel == "vpn:start"; networkState = nil; networkError = nil; return state
         case "native:upgrade-helper": running = true; networkState = "ready"; networkError = nil; return .object(["mihomo": state])

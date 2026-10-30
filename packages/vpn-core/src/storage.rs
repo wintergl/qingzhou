@@ -390,11 +390,30 @@ pub fn normalize_settings(mut v: Value) -> Result<Value> {
     if !v["specialCompatibilityRules"].is_object() {
         v["specialCompatibilityRules"] = defaults["specialCompatibilityRules"].clone();
     }
-    for k in ["mailMasterProxy8081", "wechatImageSendFallback"] {
+    for k in [
+        "mailMasterDirect",
+        "mailMasterProxy8081",
+        "wechatImageSendFallback",
+    ] {
         if !v["specialCompatibilityRules"][k].is_boolean() {
             v["specialCompatibilityRules"][k] = json!(true);
         }
     }
+    if !v["chainAutoRefresh"].is_object() {
+        v["chainAutoRefresh"] = defaults["chainAutoRefresh"].clone();
+    }
+    for key in ["enabled", "paused"] {
+        if !v["chainAutoRefresh"][key].is_boolean() {
+            v["chainAutoRefresh"][key] = json!(false);
+        }
+    }
+    if !v["chainAutoRefresh"]["intervalMinutes"]
+        .as_u64()
+        .is_some_and(|n| [10, 30, 60].contains(&n))
+    {
+        v["chainAutoRefresh"]["intervalMinutes"] = json!(30);
+    }
+    crate::static_exit::validate(&v["staticExit"])?;
     Ok(v)
 }
 fn strings(v: &Value) -> Vec<String> {

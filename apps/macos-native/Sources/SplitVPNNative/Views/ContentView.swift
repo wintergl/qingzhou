@@ -8,7 +8,7 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 230, ideal: 240, max: 270)
+                .navigationSplitViewColumnWidth(min: 205, ideal: 218, max: 245)
         } detail: {
             VStack(spacing: 0) {
                 HStack(spacing: 8) {
@@ -24,7 +24,7 @@ struct ContentView: View {
                         Text(store.menuTitle).lineLimit(1)
                     }
                 }.font(.system(size: 11)).foregroundStyle(VPNTheme.secondary)
-                    .padding(.horizontal, 28).frame(height: 38)
+                    .padding(.horizontal, 28).frame(height: 42)
                     .overlay(alignment: .bottom) { Rectangle().fill(VPNTheme.border.opacity(0.7)).frame(height: 1) }
                 Group {
                     switch store.page ?? .overview {
@@ -32,6 +32,7 @@ struct ContentView: View {
                     case .company: CompanyView(store: company, vpn: store)
                     case .subscriptions: SubscriptionsView(store: store)
                     case .nodes: NodesView(store: store)
+                    case .ispTest: ChainScannerView(store: store, standalone: true)
                     case .groups: NodeGroupsView(store: store)
                     case .routing: RoutingView(store: store)
                     case .diagnostics: DiagnosticsView(store: store)
@@ -67,14 +68,14 @@ struct ContentView: View {
                     }
                 }.frame(width: 38, height: 38).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(AppBrand.name).font(.system(size: 21, weight: .semibold))
+                    Text(AppBrand.name).font(.system(size: 22, weight: .semibold))
                     Text("让连接从容有序").font(.system(size: 12)).foregroundStyle(VPNTheme.secondary)
                 }
                 Spacer(minLength: 0)
-            }.padding(.horizontal, 20).padding(.top, 24).padding(.bottom, 30)
+            }.padding(.horizontal, 20).padding(.top, 25).padding(.bottom, 28)
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    navSection("VPN", pages: [.overview, .subscriptions, .nodes, .groups, .routing])
+                VStack(alignment: .leading, spacing: 24) {
+                    navSection("VPN", pages: [.overview, .subscriptions, .nodes, .ispTest, .groups, .routing])
                     navSection("私有网络", pages: [.company])
                     navSection("监控", pages: [.diagnostics, .traffic, .logs])
                 }.padding(.horizontal, 14).padding(.bottom, 20)
@@ -98,7 +99,7 @@ struct ContentView: View {
             Text(title).font(.system(size: 12, weight: .medium)).foregroundStyle(VPNTheme.secondary)
                 .padding(.leading, 14).padding(.bottom, 5)
             ForEach(pages) { page in
-                SidebarNavigationRow(page: page, selected: store.page == page, count: count(for: page)) {
+                SidebarNavigationRow(page: page, selected: (store.page ?? .overview) == page, count: count(for: page)) {
                     store.page = page
                 }
             }

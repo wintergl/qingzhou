@@ -24,7 +24,8 @@ class SubscriptionRepository(context: Context) {
         val array = runCatching { JSONArray(preferences.getString(KEY_NODES, "[]")) }.getOrElse { JSONArray() }
         return (0 until array.length()).mapNotNull { index ->
             val node = array.optJSONObject(index) ?: return@mapNotNull null
-            ProviderNode(node.optString("name"), node.optString("type")).takeIf { it.name.isNotEmpty() }
+            ProviderNode(node.optString("name"), node.optString("type"), node.optString("identityKey").takeIf { it.isNotEmpty() },
+                node.optString("subscriptionId").takeIf { it.isNotEmpty() }, node.optString("subscriptionName").takeIf { it.isNotEmpty() }, node.optBoolean("identityAmbiguous")).takeIf { it.name.isNotEmpty() }
         }
     }
 
@@ -42,7 +43,8 @@ class SubscriptionRepository(context: Context) {
     /** Mirrors `subscription:get-status` and `nodes:list` from the core. */
     fun mirror(status: JSONObject, nodes: List<ProviderNode>) {
         val array = JSONArray()
-        nodes.forEach { array.put(JSONObject().put("name", it.name).put("type", it.type)) }
+        nodes.forEach { array.put(JSONObject().put("name", it.name).put("type", it.type).put("identityKey", it.identityKey)
+            .put("subscriptionId", it.subscriptionId).put("subscriptionName", it.subscriptionName).put("identityAmbiguous", it.identityAmbiguous)) }
         preferences.edit()
             .putString(KEY_URL, status.optString("url"))
             .putString(KEY_STATUS, status.optString("status", "not-configured"))

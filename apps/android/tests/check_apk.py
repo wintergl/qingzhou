@@ -45,7 +45,7 @@ def main():
     with zipfile.ZipFile(args.apk) as archive:
         assert archive.testzip() is None, 'Corrupt ZIP entry'
         names = archive.namelist()
-        expected = {'libmihomo.so', 'libtun2socks.so', 'libtunfdexec.so', 'libsplitvpncore.so'}
+        expected = {'libmihomo.so', 'libtun2socks.so', 'libtunfdexec.so', 'libsplitvpncore.so', 'libgojni.so'}
         assert {Path(x).name for x in names if x.startswith('lib/')} == expected
         for name in names:
             if name.startswith('lib/'):
@@ -59,13 +59,14 @@ def main():
                               for i in range(count) if struct.unpack_from('<I', blob, offset + i * size)[0] == 1]
                 assert alignments and min(alignments) >= 16384, f'{name}: incompatible page alignment'
                 digest = hashlib.sha256(blob).hexdigest()
-                if args.built_libs:
+                if args.built_libs and Path(name).name != 'libgojni.so':
                     assert digest == hashlib.sha256((args.built_libs / Path(name).name).read_bytes()).hexdigest(), f'{name}: stale library'
                 libraries[Path(name).name] = {'sha256': digest, 'loadAlignments': alignments}
             if name.endswith(('.so', '.dex', '.json', '.yaml', '.yml', '.txt')):
                 blob = archive.read(name)
                 assert str(Path.home()).encode() not in blob, f'{name}: personal build path'
                 assert b'BEGIN PRIVATE KEY' not in blob and b'BEGIN RSA PRIVATE KEY' not in blob, f'{name}: private-key marker'
+        assert len(archive.read('assets/licenses/company-core-LICENSE.txt')) > 1000
         assert b'Java_dev_splitvpn_android_SplitVpnService_waitForNativeProcessExit' in archive.read('lib/arm64-v8a/libtunfdexec.so')
         for filename in ('GeoSite.dat', 'geoip.metadb', 'country.mmdb'):
             assert len(archive.read('assets/geodata/' + filename)) > 0, f'Missing geodata: {filename}'

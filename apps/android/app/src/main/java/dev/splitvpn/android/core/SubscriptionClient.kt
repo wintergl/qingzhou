@@ -31,6 +31,18 @@ class SubscriptionClient(
         }
     }
 
+    fun entries(): List<JSONObject> {
+        val entries = core.subscriptionStatus().optJSONArray("entries") ?: return emptyList()
+        return (0 until entries.length()).mapNotNull(entries::optJSONObject)
+    }
+
+    fun saveEntry(payload: JSONObject) { core.call("subscription:save", payload); sync() }
+    fun updateEntry(id: String) {
+        try { val result = download(id); if (!result.optBoolean("ok")) throw IOException(result.optString("error", "订阅更新失败")) }
+        finally { sync() }
+    }
+    fun changeEntry(channel: String, payload: JSONObject) { core.call(channel, payload); sync() }
+
     /** Refreshes the UI mirror, moving a pre-core subscription into the core once. */
     fun sync() {
         if (!repository.legacyMigrated() && migrateLegacy()) {

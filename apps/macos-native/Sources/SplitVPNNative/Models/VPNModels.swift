@@ -2,6 +2,7 @@ import Foundation
 
 enum VPNPage: String, CaseIterable, Identifiable {
     case overview = "总览", company = "私有网络", subscriptions = "订阅", nodes = "节点", groups = "节点组"
+    case ispTest = "ISP 测试"
     case routing = "分流规则", diagnostics = "诊断与风险", traffic = "流量", logs = "日志"
     var id: String { rawValue }
     var icon: String {
@@ -10,6 +11,7 @@ enum VPNPage: String, CaseIterable, Identifiable {
         case .company: return "building.2.crop.circle"
         case .subscriptions: return "tray.full"
         case .nodes: return "network"
+        case .ispTest: return "speedometer"
         case .groups: return "square.stack.3d.up"
         case .routing: return "arrow.triangle.branch"
         case .diagnostics: return "waveform.path.ecg"
@@ -31,6 +33,9 @@ struct Bootstrap: Decodable {
     var companyRouting: CompanyRoutingState
     var dataDir: String
     var diagnostics: DiagnosticSchedule? = nil
+    var chainScan: ChainScanActivity? = nil
+    var currentExitRisk: NodeRisk? = nil
+    var viewRevision: UInt64? = nil
 }
 struct VPNStatus: Decodable {
     var appStartedAt: String
@@ -46,6 +51,7 @@ struct CoreStatus: Decodable {
     var lastError: String?
     var networkRecovery: NetworkRecoveryStatus? = nil
     var connectionHealth: ConnectionHealthStatus? = nil
+    var viewRevision: UInt64? = nil
 }
 struct ConnectionHealthStatus: Decodable {
     var state: String
@@ -80,10 +86,12 @@ struct VPNSettings: Decodable {
     var nodeGroups: [NodeGroup]
     /// Optional so snapshots from older cores remain readable.
     var directDomainRules: [String]? = nil
+    var staticExit: StaticExitConfiguration? = nil
 }
 struct CompatibilityRules: Codable {
     var mailMasterProxy8081: Bool
     var wechatImageSendFallback: Bool
+    var mailMasterDirect: Bool? = nil
 }
 struct SubscriptionRecord: Decodable {
     var nodeCount: Int
@@ -205,6 +213,9 @@ struct NodeRisk: Decodable, Identifiable {
     var reasons: [String]
     var checkedAt: String
     var error: String?
+    var scope: String? = nil
+    var outletKey: String? = nil
+    var viaStaticExit: Bool? = nil
     var id: String { nodeName }
     var label: String {
         switch riskLevel { case "low": return "低风险"; case "medium": return "中风险"; case "high": return "高风险"; default: return "未确认" }
@@ -249,6 +260,8 @@ struct TrafficConnection: Decodable, Identifiable {
     var download: Double
     var process: String?
     var destination: String
+    var routeKind: String? = nil
+    var isCompanyTraffic: Bool { routeKind.map { $0 == "company" } ?? chains.contains { $0.hasPrefix("COMPANY-") } }
     var displayTarget: String { host.isEmpty ? destination : host }
 }
 struct ConnectivityCheck: Decodable { var connectivity: Connectivity; var nodeRisk: NodeRisk?; var nodeRiskError: String? }
@@ -267,6 +280,14 @@ struct SystemNetworkProbe: Decodable {
     var error: String?
     var httpStatus: Int?
     var elapsedMs: Double?
+    var failureReason: String? = nil
+    var responseText: String {
+        if ok { return "正常" }
+        if failureReason == "restricted" || [403, 429, 451].contains(httpStatus ?? 0) {
+            return "访问受限\(httpStatus.map { " · \($0)" } ?? "")"
+        }
+        return failureReason == "timeout" ? "响应超时" : "未连通"
+    }
 }
 struct ConnectivityLatency: Decodable { var domesticMs: Double?; var foreignMs: Double? }
 struct WebsiteTests: Decodable { var proxyName: String; var results: [WebsiteResult]; var checkedAt: String? = nil }

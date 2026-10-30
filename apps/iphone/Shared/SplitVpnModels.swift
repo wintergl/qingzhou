@@ -90,13 +90,18 @@ struct SubscriptionRecord: Codable, Equatable {
 }
 
 struct ProviderNode: Codable, Equatable, Identifiable {
-    var id: String { name }
+    var id: String { identityKey ?? name }
     var name: String
     var type: String
     var server: String
     var port: Int?
     var rawURI: String?
     var metadata: [String: String]?
+    var identityKey: String? = nil
+    var subscriptionId: String? = nil
+    var subscriptionName: String? = nil
+    var identityAmbiguous: Bool? = nil
+    var iosSupported: Bool? = nil
 }
 
 struct AppSettings: Codable, Equatable {
@@ -304,6 +309,8 @@ struct RuntimeStatus: Codable, Equatable {
     var lastError: String
     var bytesIn: UInt64
     var bytesOut: UInt64
+    var configurationRevision: String? = nil
+    var networkEpoch: String? = nil
 
     static let disconnected = RuntimeStatus(
         state: .disconnected,
@@ -335,7 +342,7 @@ enum RuntimeStatusCheckpointPolicy {
         }
         if previous.state != next.state ||
             previous.startedAt != next.startedAt ||
-            previous.lastError != next.lastError {
+            previous.lastError != next.lastError || previous.configurationRevision != next.configurationRevision || previous.networkEpoch != next.networkEpoch {
             return true
         }
 
@@ -582,6 +589,7 @@ struct GeneratedTunnelConfig: Codable, Equatable {
     var generatedAt: Date
     var yaml: String
     var singBoxJSON: String?
+    var runtimeRevision: String? = nil
 }
 
 struct DataPlaneHealthIncident: Equatable {

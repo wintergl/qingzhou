@@ -12,7 +12,13 @@ final class VPNStore: ObservableObject {
     @Published private(set) var nodes: [VPNNode] = []
     @Published private(set) var groups: [NodeGroupState] = []
     @Published private(set) var risks: [NodeRisk] = []
-    @Published private(set) var traffic: TrafficMonitor?
+    let trafficStore = TrafficStore()
+    private(set) var traffic: TrafficMonitor? {
+        get { trafficStore.value }
+        set { trafficStore.value = newValue }
+    }
+    @Published private(set) var currentExitRisk: NodeRisk?
+    @Published private(set) var nodesError: String?
     @Published private(set) var legacyOwnerRunning = false
     @Published private(set) var previewOnly = true
     @Published private(set) var ownsRuntime = false
@@ -22,6 +28,8 @@ final class VPNStore: ObservableObject {
     @Published var message: String?
     @Published var error: String?
     @Published private(set) var connectivity: ConnectivityCheck?
+    @Published private(set) var chainActivity: ChainScanActivity?
+    @Published private(set) var chainUse: ChainUseState?
     @Published private(set) var diagnostics: DiagnosticSchedule?
     @Published private(set) var speedBatchRunning = false
     @Published private(set) var speedProgress: NodeSpeedProgress?
@@ -39,6 +47,11 @@ final class VPNStore: ObservableObject {
     private let loginItems: any LoginItemService
     var onCompanyRouting: ((CompanyRoutingState) -> Void)?
     private var operationGeneration: UInt64 = 0
+    private var chainUseGeneration: UInt64 = 0
+    private var statusRevision: UInt64 = 0
+    private var nodesRevision: UInt64 = 0
+    private var riskRevision: UInt64 = 0
+    private var refreshingNodes = false
     private var started = false
     private var startupConnectionRequested = false
     private var startup: Task<Void, Never>?
@@ -58,13 +71,18 @@ final class VPNStore: ObservableObject {
         self.loginItems = loginItems ?? NativeLoginItemService()
         self.riskKeyVault = riskKeyVault ?? KeychainCompanyCredentialVault(service: "dev.split-vpn.risk-api-key")
         if let preview {
+            chainActivity = preview.chainScan
             started = true; statusKnown = true; status = preview.status; nodes = preview.nodes; groups = preview.groups; risks = preview.risks
             traffic = preview.traffic; previewOnly = true; companyRouting = preview.companyRouting
+            currentExitRisk = preview.currentExitRisk
             if let diagnostics = preview.diagnostics { applyDiagnostics(diagnostics) }
             if let loginItems { loginItemState = loginItems.state() }
         }
         coreObservation = self.core.$availability.sink { [weak self] availability in
             switch availability {
+            case .starting:
+                self?.statusRevision = 0; self?.nodesRevision = 0; self?.riskRevision = 0
+                self?.currentExitRisk = nil
             case .unavailable, .closed: self?.statusKnown = false; self?.startPolling()
             default: break
             }
@@ -73,16 +91,19 @@ final class VPNStore: ObservableObject {
 
     var running: Bool { status?.mihomo.state == "running" }
     var selectedProxy: String { status?.settings.selectedProxy ?? "尚未读取" }
-    var displaySelectedProxy: String { groups.first { $0.runtimeName == selectedProxy }?.group.name ?? selectedProxy }
+    var displaySelectedProxy: String {
+        let front = groups.first { $0.runtimeName == selectedProxy }?.group.name ?? selectedProxy
+        return status?.settings.staticExit?.enabled == true ? "静态 ISP · 经 \(front)" : front
+    }
     var favoriteNames: Set<String> { Set(status?.settings.favoriteNodeNames ?? []) }
     var providerNodes: [VPNNode] { nodes.filter(\.isProvider) }
-    var currentRisk: NodeRisk? { risks.first { $0.nodeName == selectedProxy } }
-    var canMutate: Bool { !previewOnly && !terminating && busy == nil && connectionOperation != .disconnecting && statusKnown && status != nil }
+    var currentRisk: NodeRisk? { currentExitRisk }
+    var canMutate: Bool { !previewOnly && !terminating && busy == nil && chainUse?.active != true && connectionOperation != .disconnecting && statusKnown && status != nil }
     var connectionRequested: Bool {
         running || connectionOperation == .connecting || status?.mihomo.networkRecovery?.active == true
     }
     var canDisconnect: Bool {
-        !previewOnly && !terminating && statusKnown && !connectionProtected
+        !previewOnly && !terminating && (statusKnown || connectionOperation == .connecting) && !connectionProtected
             && connectionRequested && connectionOperation != .disconnecting
     }
     var canControlConnection: Bool { canDisconnect || canMutate }
@@ -95,6 +116,37 @@ final class VPNStore: ObservableObject {
         refreshLoginItem()
         core.onEvent = { [weak self] event, value in
             guard let self else { return }
+            if event == "nodes:updated", let value,
+               let snapshot = try? JSONDecoder().decode(LiveNodeSnapshot.self, from: value.encoded) {
+                if let revision = snapshot.viewRevision, revision < self.nodesRevision { return }
+                self.nodesRevision = snapshot.viewRevision ?? self.nodesRevision
+                self.nodesError = snapshot.error
+                self.nodes = snapshot.nodes ?? []
+                self.groups = snapshot.groups ?? []
+                if snapshot.error != nil {
+                    self.statusKnown = false; self.currentExitRisk = nil
+                    self.statusRevision = max(self.statusRevision, snapshot.viewRevision ?? 0)
+                    self.startPolling()
+                }
+                if let settings = snapshot.settings {
+                    self.status?.settings = settings
+                    self.statusRevision = max(self.statusRevision, snapshot.viewRevision ?? 0)
+                }
+                if let subscription = snapshot.subscription { self.status?.subscription = subscription }
+                return
+            }
+            if event == "risk:current-updated", let value,
+               let update = try? JSONDecoder().decode(CurrentExitRiskUpdate.self, from: value.encoded) {
+                if let revision = update.viewRevision, revision < self.riskRevision { return }
+                self.riskRevision = update.viewRevision ?? self.riskRevision
+                self.currentExitRisk = update.result
+                return
+            }
+            if event == "chain-scan:use-status", let value,
+               let state = try? JSONDecoder().decode(ChainUseState.self, from: value.encoded) {
+                self.receiveChainUse(state)
+                return
+            }
             if event == "diagnostics:updated", let value, let state = try? JSONDecoder().decode(DiagnosticSchedule.self, from: value.encoded) {
                 self.applyDiagnostics(state); return
             }
@@ -114,9 +166,13 @@ final class VPNStore: ObservableObject {
             }
             if event == "vpn:status", let value,
                let state = try? JSONDecoder().decode(CoreStatus.self, from: value.encoded) {
+                if let revision = state.viewRevision, revision < self.statusRevision { return }
+                self.statusRevision = state.viewRevision ?? self.statusRevision
                 self.status?.mihomo = state
                 self.statusKnown = self.status != nil
-                if state.networkRecovery?.ready == false { self.connectivity = nil; self.websites = nil }
+                if state.networkRecovery?.ready == false || state.state != "running" {
+                    self.connectivity = nil; self.websites = nil; self.currentExitRisk = nil
+                }
                 self.startPolling()
                 return
             }
@@ -161,9 +217,22 @@ final class VPNStore: ObservableObject {
     }
     func refresh() async {
         guard !terminating else { return }
+        let generation = operationGeneration
         do { try await refreshSnapshot() }
         catch is CancellationError { return }
-        catch { statusKnown = false; self.error = error.localizedDescription }
+        catch {
+            guard generation == operationGeneration else { return }
+            statusKnown = false; self.error = error.localizedDescription
+            // A broken node/history file must not hide a separately confirmed connection.
+            do {
+                let latest: VPNStatus = try await core.request("vpn:get-status")
+                guard generation == operationGeneration, !terminating, core.availability != .closed else { return }
+                if let revision = latest.mihomo.viewRevision, revision < statusRevision { return }
+                statusRevision = latest.mihomo.viewRevision ?? statusRevision
+                status = latest; statusKnown = true
+                startPolling()
+            } catch { /* Keep the last data as history, with connection status unknown. */ }
+        }
     }
     private func refreshSnapshot(timeout: Duration? = nil) async throws {
         while refreshing { try await Task.sleep(for: .milliseconds(20)) }
@@ -173,11 +242,20 @@ final class VPNStore: ObservableObject {
         let data: Bootstrap = try await core.request("native:bootstrap", timeout: timeout)
         guard generation == operationGeneration else { throw CancellationError() }
         guard core.availability != .closed else { throw CoreService.CoreError.message("VPN 服务已关闭。") }
+        if let revision = data.viewRevision, revision < statusRevision { return }
+        statusRevision = data.viewRevision ?? statusRevision
         statusKnown = true
-        status = data.status; nodes = data.nodes; risks = data.risks
+        chainActivity = data.chainScan
+        status = data.status; risks = data.risks
+        if data.viewRevision.map({ $0 >= riskRevision }) ?? true {
+            riskRevision = data.viewRevision ?? riskRevision
+            currentExitRisk = data.currentExitRisk
+        }
+        let applyNodes = data.viewRevision.map({ $0 >= nodesRevision }) ?? true
+        if applyNodes { nodesRevision = data.viewRevision ?? nodesRevision; nodes = data.nodes; nodesError = nil }
         if data.status.mihomo.networkRecovery?.ready == false { connectivity = nil; websites = nil }
         let states = Dictionary(uniqueKeysWithValues: data.groups.map { ($0.id, $0) })
-        groups = data.status.settings.nodeGroups.map { group in
+        let updatedGroups = data.status.settings.nodeGroups.map { group in
             if let state = states[group.id] { return state }
             // Subscription groups are retained in the saved schema but the
             // desktop runtime API only returns custom groups. Show both.
@@ -194,6 +272,7 @@ final class VPNStore: ObservableObject {
                                   failedCount: members.filter { $0.available == false }.count,
                                   untestedCount: members.filter { $0.available == nil }.count)
         }
+        if applyNodes { groups = updatedGroups }
         traffic = data.traffic; previewOnly = data.previewOnly
         if let diagnostics = data.diagnostics { applyDiagnostics(diagnostics) }
         ownsRuntime = data.ownsRuntime; companyRouting = data.companyRouting
@@ -225,7 +304,34 @@ final class VPNStore: ObservableObject {
         guard !terminating, !refreshingTraffic else { return }
         refreshingTraffic = true
         defer { refreshingTraffic = false }
-        if let result: TrafficMonitor = try? await core.request("traffic:get-monitor"), !Task.isCancelled { traffic = result }
+        let generation = operationGeneration, revision = statusRevision
+        do {
+            let result: TrafficMonitor = try await core.request("traffic:get-monitor")
+            guard !Task.isCancelled, generation == operationGeneration, revision == statusRevision else { return }
+            traffic = result
+        } catch {
+            guard !Task.isCancelled, generation == operationGeneration, revision == statusRevision else { return }
+            if var previous = traffic {
+                previous.error = "流量读取失败，显示上次结果：\(error.localizedDescription)"
+                traffic = previous
+            }
+            statusKnown = false; currentExitRisk = nil
+            startPolling()
+        }
+    }
+    func refreshNodes() async {
+        guard !terminating, !previewOnly, !refreshingNodes else { return }
+        refreshingNodes = true
+        defer { refreshingNodes = false }
+        let generation = operationGeneration, revision = nodesRevision
+        do {
+            let result: [VPNNode] = try await core.request("nodes:list")
+            guard !Task.isCancelled, generation == operationGeneration, revision == nodesRevision else { return }
+            nodes = result; nodesError = nil
+        } catch {
+            guard generation == operationGeneration, revision == nodesRevision else { return }
+            nodesError = error.localizedDescription; nodes = []
+        }
     }
     private struct StartupConnection: Decodable {
         var startupOutcome: String
@@ -286,7 +392,7 @@ final class VPNStore: ObservableObject {
         guard !terminating, !connectionProtected, statusKnown else { return }
         // Forward even after a failed recovery. The core owns reconnect intent
         // and ignores late notifications after an explicit disconnect.
-        connectivity = nil; websites = nil
+        connectivity = nil; websites = nil; currentExitRisk = nil
         let payload: [String: Any] = available.map { ["available": $0] } ?? [:]
         Task { [weak self] in
             guard let self, !self.terminating else { return }
@@ -306,8 +412,8 @@ final class VPNStore: ObservableObject {
         if !value.sleeping, value.visible, !previous.visible, running {
             Task { [weak self] in await self?.refreshTraffic() }
         }
-        if forceReport || value.sleeping != previous.sleeping || value.lowPower != previous.lowPower || value.visible != previous.visible {
-            let payload: [String: Any] = ["sleeping": value.sleeping, "lowPower": value.lowPower, "networkEvents": networkEventsEnabled, "visible": value.visible]
+        if forceReport || value.sleeping != previous.sleeping || value.lowPower != previous.lowPower || value.onBattery != previous.onBattery || value.visible != previous.visible {
+            let payload: [String: Any] = ["sleeping": value.sleeping, "lowPower": value.lowPower, "networkEvents": networkEventsEnabled, "visible": value.visible, "onBattery": value.onBattery as Any? ?? NSNull()]
             Task { [weak self] in
                 guard let self, !self.terminating else { return }
                 _ = try? await self.core.requestValue("native:runtime-environment", payload: payload)
@@ -321,9 +427,12 @@ final class VPNStore: ObservableObject {
     func disconnectNow() async throws {
         guard canDisconnect else { return }
         operationGeneration &+= 1
+        if chainUse?.active == true {
+            chainUse?.phase = "cancelled"; chainUse?.finished = true; chainUse?.cancelRequested = true
+        }
         startup?.cancel(); operation?.cancel()
         connectionOperation = .disconnecting; busy = "断开 VPN"
-        connectivity = nil; websites = nil; error = nil; message = nil
+        connectivity = nil; websites = nil; currentExitRisk = nil; error = nil; message = nil
         defer { connectionOperation = nil; busy = nil }
         do {
             let stopped: CoreStatus = try await core.request("vpn:stop", timeout: .seconds(45))
@@ -382,6 +491,106 @@ final class VPNStore: ObservableObject {
     }
     func toggleFavorite(_ node: VPNNode) {
         action("保存收藏", channel: "native:favorite", payload: ["name": node.name])
+    }
+    func setStaticExitEnabled(_ enabled: Bool) {
+        action(enabled ? "启用 ISP 出口" : "关闭 ISP 出口", channel: "static-exit:set-enabled", payload: ["enabled": enabled])
+    }
+    func receiveChainUse(_ incoming: ChainUseState) {
+        guard !terminating, connectionOperation != .disconnecting else { return }
+        if chainUse?.operationId != incoming.operationId {
+            guard incoming.automatic == true, !incoming.finished, chainUse?.active != true,
+                  !previewOnly, statusKnown, connectionOperation == nil, running, ownsRuntime,
+                  status?.settings.staticExit?.enabled == true else { return }
+            chainUseGeneration = operationGeneration
+        }
+        guard chainUseGeneration == operationGeneration else { return }
+        if chainUse?.operationId == incoming.operationId, chainUse?.finished == true, !incoming.finished { return }
+        var state = incoming
+        state.previousNodeName = state.previousNodeName ?? chainUse?.previousNodeName
+        state.automatic = state.automatic ?? chainUse?.automatic
+        chainUse = state
+        if state.finished {
+            busy = nil; connectionOperation = nil
+            error = nil
+            if let result = state.result, result.connected {
+                message = "已连接：\(result.nodeName) → ISP；实际出口 \(result.exitIp)。"
+            } else { message = nil }
+        } else { busy = state.title }
+    }
+    func dismissChainUse() {
+        guard chainUse?.finished == true else { return }
+        chainUse = nil
+    }
+    func retryChainUse() async {
+        guard canMutate, let previous = chainUse, previous.finished, previous.phase == "failed" else { return }
+        do {
+            let snapshot: ChainScanState = try await core.request("chain-scan:get")
+            guard canMutate, chainUse?.operationId == previous.operationId else { return }
+            guard let row = snapshot.results.first(where: { $0.id == previous.identityKey }),
+                  ChainComparisonPresentation(state: snapshot).canApply(row) else {
+                chainUse?.error = "这条线路已不符合当前配置，请选择其他备用或重新测试。"
+                return
+            }
+            await useChainRoute(row, scanID: snapshot.id, strategy: "balanced")
+        } catch {
+            guard chainUse?.operationId == previous.operationId else { return }
+            chainUse?.error = "读取线路失败，请稍后重试。"
+        }
+    }
+    func useChainRoute(_ row: ChainScanRow, scanID: String, strategy: String) async {
+        guard canMutate, !connectionProtected, chainUse?.active != true else { return }
+        let id = UUID().uuidString
+        chainUseGeneration = operationGeneration
+        chainUse = ChainUseState(operationId: id, identityKey: row.id, nodeName: row.nodeName, phase: "verifying",
+            previousNodeName: running && status?.settings.staticExit?.enabled == true ? selectedProxy : nil)
+        busy = chainUse?.title; connectionOperation = .connecting
+        error = nil; message = nil
+        let generation = operationGeneration
+        do {
+            let result: ChainUseResult = try await core.request("chain-scan:use", payload: ["scanId": scanID, "strategy": strategy, "identityKey": row.id, "operationId": id])
+            guard generation == operationGeneration, chainUse?.operationId == id else { return }
+            guard result.connected, result.operationId == id, result.identityKey == row.id else {
+                throw CoreService.CoreError.uncertain("没有收到所选线路的连接确认，请刷新实际状态。")
+            }
+            receiveChainUse(ChainUseState(operationId: id, identityKey: row.id, nodeName: row.nodeName, phase: "connected", finished: true, result: result))
+        } catch {
+            guard generation == operationGeneration, chainUse?.operationId == id else { return }
+            if let state: ChainUseState = try? await core.request("chain-scan:use-state", timeout: .seconds(8)), state.operationId == id {
+                receiveChainUse(state)
+            } else if case CoreService.CoreError.message = error {
+                receiveChainUse(ChainUseState(operationId: id, identityKey: row.id, nodeName: row.nodeName,
+                    phase: chainUse?.cancelRequested == true ? "cancelled" : "failed", finished: true, error: error.localizedDescription))
+            } else {
+                chainUse?.phase = "unknown"; chainUse?.error = "连接结果尚未确认，请刷新状态。"
+                busy = chainUse?.title
+            }
+        }
+        await refresh()
+    }
+    func cancelChainUse() async {
+        guard let state = chainUse, state.active, !state.cancelRequested else { return }
+        chainUse?.cancelRequested = true
+        do {
+            let reply: ChainUseState = try await core.request("chain-scan:cancel-use", payload: ["operationId": state.operationId], timeout: .seconds(8))
+            guard chainUse?.operationId == state.operationId else { return }
+            // A preflight credential read may still be pending. Preserve the
+            // visible target until the original request confirms cancellation.
+            if reply.nodeName != nil { receiveChainUse(reply) }
+        } catch {
+            chainUse?.cancelRequested = false
+            chainUse?.error = "取消尚未确认，请刷新状态后重试。"
+        }
+    }
+    func refreshChainUse() async {
+        guard let id = chainUse?.operationId else { return }
+        do {
+            let state: ChainUseState = try await core.request("chain-scan:use-state", timeout: .seconds(8))
+            guard state.operationId == id else { throw CoreService.CoreError.message("原操作已结束，请核对当前连接。") }
+            receiveChainUse(state)
+        } catch {
+            chainUse?.error = "仍无法确认连接结果，请检查 VPN 服务状态。"
+        }
+        await refresh()
     }
     func saveGroups(_ groups: [NodeGroup]) { action("保存节点组", channel: "node-groups:save", payload: ["nodeGroups": Self.jsonObjects(groups)]) }
     func checkAllRisks() {

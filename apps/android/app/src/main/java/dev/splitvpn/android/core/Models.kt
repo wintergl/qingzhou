@@ -10,7 +10,11 @@ data class SubscriptionRecord(
 
 data class ProviderNode(
     val name: String,
-    val type: String = ""
+    val type: String = "",
+    val identityKey: String? = null,
+    val subscriptionId: String? = null,
+    val subscriptionName: String? = null,
+    val identityAmbiguous: Boolean = false
 )
 
 data class RuntimeStatus(
@@ -23,7 +27,8 @@ data class RuntimeStatus(
     val tun2socksPid: Int,
     val alwaysOn: Boolean = false,
     val networkEpoch: Long = 0,
-    val retryAt: Long = 0
+    val retryAt: Long = 0,
+    val configurationRevision: String = ""
 )
 
 data class TrafficSnapshot(
@@ -58,7 +63,10 @@ data class ConnectivityResult(
     val foreignOk: Boolean,
     val externalIp: String?,
     val latency: ConnectivityLatency,
-    val error: String?
+    val error: String?,
+    val proxyOk: Boolean? = null,
+    val systemDnsOk: Boolean? = null,
+    val chatgptStatus: String? = null
 )
 
 data class RiskResult(

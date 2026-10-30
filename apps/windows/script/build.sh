@@ -47,7 +47,11 @@ python3 - "$APP/Qingzhou/obj/project.assets.json" "$NUGET_PACKAGES" "$OUT" <<'PY
 import json, shutil, sys
 from pathlib import Path
 assets, packages, out = map(Path, sys.argv[1:])
-frameworks = json.loads(assets.read_text())["project"]["frameworks"]
+metadata = json.loads(assets.read_text())
+frameworks = metadata["project"]["frameworks"]
+package_roots = [Path(root) for root in metadata.get("packageFolders", {})]
+if packages not in package_roots:
+    package_roots.append(packages)
 notices = {
     "Microsoft.NETCore.App.Runtime.win-x64": [("LICENSE.TXT", "LICENSE-DotNet.txt"), ("THIRD-PARTY-NOTICES.TXT", "THIRD-PARTY-NOTICES-DotNet.txt")],
     "Microsoft.WindowsDesktop.App.Runtime.win-x64": [("LICENSE", "LICENSE-WindowsDesktop.txt")],
@@ -59,7 +63,11 @@ for framework in frameworks.values():
             continue
         version = dep["version"].strip("[]").split(",")[0].strip()
         for source, destination in notices[dep["name"]]:
-            shutil.copyfile(packages / dep["name"].lower() / version / source, out / destination)
+            candidates = [root / dep["name"].lower() / version / source for root in package_roots]
+            actual = next((path for path in candidates if path.is_file()), None)
+            if actual is None:
+                raise RuntimeError(f"Missing runtime license: {dep['name']}/{version}/{source}")
+            shutil.copyfile(actual, out / destination)
         copied.add(dep["name"])
 if copied != set(notices):
     raise RuntimeError("Missing runtime pack license metadata")

@@ -3,6 +3,7 @@ package companyprocess
 import (
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,7 +22,21 @@ func Current() Process {
 		current.Name = filepath.Base(current.Path)
 		current.Platform = runtime.GOOS
 		if current.Platform == "darwin" { current.Platform = "macOS" }
-		if data, err := os.ReadFile(current.Path); err == nil { current.Fingerprint = fmt.Sprintf("%X", sha256.Sum256(data)) }
+		if file, err := os.Open(current.Path); err == nil {
+			hash := sha256.New()
+			if _, err = io.Copy(hash, file); err == nil { current.Fingerprint = fmt.Sprintf("%X", hash.Sum(nil)) }
+			_ = file.Close()
+		}
 	})
 	return current
+}
+
+func AuthPlatform() string {
+	switch runtime.GOOS {
+	case "darwin": return "Mac"
+	case "ios": return "iOS"
+	case "android": return "Android"
+	case "windows": return "Windows"
+	default: return "Linux"
+	}
 }

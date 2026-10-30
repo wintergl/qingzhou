@@ -20,6 +20,10 @@ use std::{
     path::PathBuf,
     sync::Mutex,
 };
+pub(crate) mod company;
+mod diagnostics;
+mod management;
+pub(crate) mod profile;
 
 /// Settings the mobile shells own; anything else is rejected.
 const SETTINGS_KEYS: &[&str] = &[
@@ -35,10 +39,89 @@ const SETTINGS_KEYS: &[&str] = &[
     "ipv6",
     "lanDirect",
     "tailscaleDirect",
+    "staticExit",
 ];
 
 /// Serializes read-modify-write cycles on the shared data directory.
 static LOCK: Mutex<()> = Mutex::new(());
+
+/// App and Network Extension share one directory but have different processes.
+/// The mutex keeps thread ordering; flock protects cross-process transactions.
+pub(super) struct Transaction<'a> {
+    #[cfg(unix)]
+    file: Option<std::fs::File>,
+    _guard: std::sync::MutexGuard<'a, ()>,
+}
+#[cfg(unix)]
+impl Drop for Transaction<'_> {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        if let Some(file) = &self.file {
+            unsafe {
+                libc::flock(file.as_raw_fd(), libc::LOCK_UN);
+            }
+        }
+    }
+}
+pub(super) fn transaction(store: &Storage) -> Result<Transaction<'static>> {
+    transaction_inherited(store, None)
+}
+fn transaction_inherited(store: &Storage, inherited: Option<i32>) -> Result<Transaction<'static>> {
+    #[cfg(unix)]
+    {
+        use std::os::{
+            fd::{AsRawFd, FromRawFd},
+            unix::fs::{MetadataExt, OpenOptionsExt},
+        };
+        std::fs::create_dir_all(&store.root)?;
+        let path = store.path(".mobile-transaction.lock");
+        let file = if let Some(fd) = inherited {
+            ensure!(fd >= 0, "移动端事务句柄无效。");
+            let copied = unsafe { libc::dup(fd) };
+            ensure!(copied >= 0, "移动端事务句柄已关闭。");
+            let copied = unsafe { std::fs::File::from_raw_fd(copied) };
+            let a = copied.metadata()?;
+            let b = std::fs::metadata(&path)?;
+            ensure!(
+                a.dev() == b.dev() && a.ino() == b.ino() && a.is_file(),
+                "移动端事务目录不匹配。"
+            );
+            None
+        } else {
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+                .open(path)?;
+            loop {
+                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                    break;
+                };
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::Interrupted {
+                    return Err(error.into());
+                }
+            }
+            Some(file)
+        };
+        // Native transactions acquire flock before calling Rust. Keep that
+        // ordering here so a background reader cannot invert the locks.
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(Transaction {
+            file,
+            _guard: guard,
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (store, inherited);
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(Transaction { _guard: guard })
+    }
+}
 
 // Android's userspace bridge forwards this virtual server through SOCKS; the
 // DNS outbound handles both UDP and TCP inside Mihomo without binding port 53.
@@ -52,6 +135,12 @@ fn string<'a>(p: &'a Value, k: &str) -> Result<&'a str> {
 }
 
 pub fn handle(store: &Storage, channel: &str, p: &Value) -> Result<Value> {
+    if company::handles(channel) {
+        return company::handle(store, channel, p);
+    }
+    if let Some(result) = management::handle(store, channel, p) {
+        return result;
+    }
     match channel {
         "bootstrap" => Ok(json!({
             "settings":store.settings()?,
@@ -61,6 +150,26 @@ pub fn handle(store: &Storage, channel: &str, p: &Value) -> Result<Value> {
         "settings:get" => store.settings(),
         "settings:patch" => {
             crate::routing::validate_patch(p)?;
+            if let Some(value) = p.get("unknownTraffic") {
+                ensure!(
+                    matches!(value.as_str(), Some("direct" | "vpn")),
+                    "默认分流策略无效。"
+                );
+            }
+            if let Some(value) = p.get("geoFallback") {
+                ensure!(
+                    matches!(
+                        value.as_str(),
+                        Some("cn-direct-else-vpn" | "follow-default" | "block")
+                    ),
+                    "Geo 降级策略无效。"
+                );
+            }
+            for key in ["ipv6", "lanDirect", "tailscaleDirect"] {
+                if let Some(value) = p.get(key) {
+                    ensure!(value.is_boolean(), "网络设置需要布尔值。");
+                }
+            }
             let mut s = store.settings()?;
             let patch = p.as_object().context("设置参数需要是对象。")?;
             if let Some(key) = patch.keys().find(|k| !SETTINGS_KEYS.contains(&k.as_str())) {
@@ -130,6 +239,7 @@ fn nodes(store: &Storage) -> Result<Vec<Value>> {
     for (node, raw) in out.iter_mut().zip(raw) {
         node["server"] = raw["server"].clone();
         node["port"] = raw["port"].clone();
+        node["iosSupported"] = json!(singbox::outbound(&raw).is_some());
     }
     Ok(out)
 }
@@ -151,11 +261,16 @@ fn mihomo(store: &Storage, p: &Value) -> Result<Value> {
     // tun2socks owns the Android TUN; mihomo only serves the mixed port and
     // cannot see the originating app, so PROCESS-NAME rules never match.
     settings["tun"] = json!(false);
+    settings["specialCompatibilityRules"]["mailMasterDirect"] = json!(false);
     settings["specialCompatibilityRules"]["wechatImageSendFallback"] = json!(false);
     let selected = &settings["selectedProxy"];
     let nodes = nodes(store)?;
     let selected_node = nodes.iter().find(|n| &n["name"] == selected);
-    let selection_error = if selected == "DIRECT" {
+    let selection_error = if selected == "DIRECT"
+        || (nodes.is_empty()
+            && (company::record(store)?["enabled"] == true
+                || p["companyConnectionRequested"] == true))
+    {
         ""
     } else if nodes.is_empty() {
         "订阅没有可用节点，VPN 已停止，请先更新或启用订阅。"
@@ -240,6 +355,74 @@ fn mihomo(store: &Storage, p: &Value) -> Result<Value> {
     if let Some(dns) = c["dns"].as_object_mut() {
         dns.remove("listen");
     }
+    let ports = profile::Ports {
+        mixed,
+        controller,
+        probe: port("probePort", 9091)?,
+        current: port("exitProbePort", 9092)?,
+        scan: port("scanPort", 9093)?,
+    };
+    ports.validate()?;
+    config::add_probe(&mut c, ports.probe);
+    crate::static_exit::apply(&mut c, &settings, &p["exitCredential"], ports.current)?;
+    if settings["staticExit"]["enabled"] == true {
+        crate::static_exit::add_scan(&mut c, ports.scan)?;
+    } else {
+        let proxy = if c["proxy-groups"]
+            .as_array()
+            .is_some_and(|groups| groups.iter().any(|g| g["name"] == "VPN"))
+        {
+            "VPN"
+        } else {
+            "DIRECT"
+        };
+        c["listeners"].as_array_mut().unwrap().push(json!({"name":"mobile-current-exit","type":"mixed","listen":"127.0.0.1","port":ports.current,"proxy":proxy}));
+        if !settings["staticExit"]["server"]
+            .as_str()
+            .unwrap_or("")
+            .is_empty()
+            && !p["exitCredential"].is_null()
+        {
+            let mut scan_config = c.clone();
+            let mut scan_settings = settings.clone();
+            scan_settings["staticExit"]["enabled"] = json!(true);
+            scan_settings["selectedProxy"] = json!("AUTO");
+            if crate::static_exit::apply(
+                &mut scan_config,
+                &scan_settings,
+                &p["exitCredential"],
+                ports.current,
+            )
+            .is_ok()
+            {
+                if let Some(exit) = scan_config["proxies"]
+                    .as_array()
+                    .and_then(|nodes| nodes.iter().find(|n| n["name"] == crate::static_exit::EXIT))
+                {
+                    c["proxies"].as_array_mut().unwrap().push(exit.clone());
+                }
+                crate::static_exit::add_scan(&mut c, ports.scan)?;
+            }
+        }
+    }
+    c = company::apply_mihomo(store, c, &p["companyTunnel"])?;
+    let revision = profile::persist(
+        store,
+        "mihomo",
+        &c,
+        &settings,
+        &ports,
+        nodes
+            .iter()
+            .filter_map(|n| {
+                Some((
+                    n["identityKey"].as_str()?.to_owned(),
+                    n["name"].as_str()?.to_owned(),
+                ))
+            })
+            .collect(),
+        selected.clone(),
+    )?;
     atomic_write(
         &store.path("mihomo/providers/vpn-domains.yaml"),
         config::yaml(&json!({"payload":settings["vpnDomainRules"]}))?.as_bytes(),
@@ -251,6 +434,7 @@ fn mihomo(store: &Storage, p: &Value) -> Result<Value> {
         "config":path.to_string_lossy(),
         "controller":c["external-controller"],
         "secret":c["secret"],
+        "runtimeRevision":revision,
         "selectedProxy":selected,
         "selectionValid":selection_error.is_empty(),
         "selectionError":selection_error,
@@ -454,8 +638,20 @@ pub fn call(root: &str, request: &str) -> String {
         let request: Value = serde_json::from_str(request).context("请求格式无效。")?;
         let channel = request["channel"].as_str().context("缺少请求通道。")?;
         let payload = request.get("payload").cloned().unwrap_or_else(|| json!({}));
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        handle(&Storage::new(PathBuf::from(root)), channel, &payload)
+        if diagnostics::handles(channel) {
+            ensure!(
+                request["transactionFd"].is_null(),
+                "网络检测不能占用配置写入事务。"
+            );
+            return diagnostics::handle(&Storage::new(PathBuf::from(root)), channel, &payload);
+        }
+        let store = Storage::new(PathBuf::from(root));
+        let inherited = request["transactionFd"]
+            .as_i64()
+            .map(|n| i32::try_from(n).context("事务句柄无效。"))
+            .transpose()?;
+        let _guard = transaction_inherited(&store, inherited)?;
+        handle(&store, channel, &payload)
     })();
     match result {
         Ok(data) => json!({"ok":true,"data":data}),

@@ -1,4 +1,5 @@
 pub mod background;
+pub mod chain_scan;
 pub mod company;
 pub mod config;
 pub mod connection_health;
@@ -13,7 +14,9 @@ pub mod platform;
 pub mod routing;
 pub mod runtime;
 pub mod singbox;
+pub mod static_exit;
 pub mod storage;
 pub mod subscription;
+pub mod traffic;
 
 pub use runtime::{Core, Events, Jobs};

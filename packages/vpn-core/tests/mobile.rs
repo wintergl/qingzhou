@@ -165,8 +165,8 @@ fn generates_sing_box_outbounds_from_mihomo_nodes() {
     assert_eq!(summary["providerNodeCount"], 8);
     assert_eq!(summary["convertedOutboundCount"], 6);
     assert_eq!(summary["unsupportedNodeCount"], 2);
-    assert_eq!(summary["selectedProxyStatus"], "automatic-fallback");
-    assert_eq!(summary["selectedOutboundTag"], "香港-01");
+    assert_eq!(summary["selectedProxyStatus"], "automatic-urltest");
+    assert_eq!(summary["selectedOutboundTag"], "__QZ_MOBILE_AUTO__");
     assert_eq!(config["inbounds"][0]["mtu"], 1280);
     assert_eq!(config["inbounds"][0]["address"][0], singbox::TUN_ADDRESS);
     assert_eq!(config["inbounds"][0]["address"][1], singbox::TUN_ADDRESS6);
@@ -214,8 +214,8 @@ fn generates_sing_box_outbounds_from_mihomo_nodes() {
     assert_eq!(outbound(&config, "direct")["type"], "direct");
     assert_eq!(outbound(&config, "direct-2")["type"], "socks");
     let selector = outbound(&config, "proxy");
-    assert_eq!(selector["default"], "香港-01");
-    assert_eq!(selector["outbounds"].as_array().unwrap().len(), 7);
+    assert_eq!(selector["default"], "__QZ_MOBILE_AUTO__");
+    assert_eq!(selector["outbounds"].as_array().unwrap().len(), 8);
 }
 
 #[test]

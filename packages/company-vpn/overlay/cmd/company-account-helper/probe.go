@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/mythologyli/zju-connect/internal/companycert"
+ "github.com/mythologyli/zju-connect/internal/companyprocess"
 )
 
 type authMethod struct {
@@ -82,7 +83,7 @@ func probe(u *url.URL) (probeInfo, error) {
 		if err != nil {
 			return err
 		}
-		req.Header.Set("User-Agent", "SplitVPN-CompanyAccountTest/0.1 (macOS)")
+		req.Header.Set("User-Agent", "SplitVPN-Company/0.2 ("+companyprocess.AuthPlatform()+")")
 		req.Header.Set("Accept", "application/json")
 		resp, err := client.Do(req)
 		if err != nil {

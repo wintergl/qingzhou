@@ -4,8 +4,8 @@ struct PageHeader: View {
     let title: String
     let subtitle: String
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Text(title).font(.system(size: 28, weight: .semibold)).foregroundStyle(VPNTheme.text)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.system(size: 30, weight: .semibold)).tracking(-0.7).foregroundStyle(VPNTheme.text)
             Text(subtitle).foregroundStyle(VPNTheme.secondary).font(.system(size: 13)).lineSpacing(3)
         }
     }
@@ -37,8 +37,8 @@ func dateText(_ value: String?) -> String {
 }
 extension View {
     func detailCard(padding: CGFloat = 24) -> some View {
-        self.padding(padding).background(VPNTheme.surface, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(VPNTheme.border, lineWidth: 1))
-            .shadow(color: .black.opacity(0.018), radius: 8, x: 0, y: 3)
+        self.padding(padding).background(VPNTheme.surface, in: RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(VPNTheme.border, lineWidth: 1))
+            .shadow(color: .black.opacity(0.025), radius: 12, x: 0, y: 4)
     }
 }

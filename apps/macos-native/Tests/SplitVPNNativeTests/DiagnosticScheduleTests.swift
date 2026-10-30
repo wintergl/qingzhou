@@ -2,6 +2,45 @@ import XCTest
 @testable import SplitVPNNative
 
 final class DiagnosticScheduleTests: XCTestCase {
+    func testConnectionReadinessAndHistoricalResultsHaveClearTiming() throws {
+        func record(_ payload: String) throws -> DiagnosticRecord {
+            try JSONDecoder().decode(DiagnosticRecord.self, from: Data(payload.utf8))
+        }
+        let waiting = try record(#"{"state":"idle","nextCheckAt":"2026-10-29T01:00:00Z"}"#)
+        XCTAssertEqual(waiting.nextCheckText(pausedReason: nil), "连接已就绪，即将自动检测")
+        XCTAssertEqual(waiting.nextCheckText(pausedReason: "recovering"), "连接恢复后自动重新检测")
+        XCTAssertEqual(waiting.nextCheckText(pausedReason: "disconnected"), "连接后自动检测")
+        let updating = try record(#"{"state":"running","source":"automatic","staleResult":true,"checkedAt":"2026-10-29T00:00:00Z"}"#)
+        XCTAssertTrue(updating.running)
+        XCTAssertTrue(updating.stale)
+        XCTAssertEqual(updating.nextCheckText(pausedReason: nil), "正在更新本次连接的检测结果")
+        // Older cores omit staleResult and retain their original interpretation.
+        XCTAssertTrue(try record(#"{"state":"stale"}"#).stale)
+        XCTAssertFalse(try record(#"{"state":"ready"}"#).stale)
+        let ready = try record(#"{"state":"ready","checkedAt":"2026-10-29T00:00:00Z","nextCheckAt":"2026-10-29T00:15:00Z","intervalSeconds":900}"#)
+        XCTAssertTrue(ready.nextCheckText(pausedReason: nil).contains("每 15 分钟"))
+    }
+
+    @MainActor func testBothAutomaticChecksCanRunWithoutBlockingDisconnectOrStartingManualRequests() async throws {
+        let f = try MenuBarFixture(); defer { f.close() }
+        f.coreModel.running = true; f.store.startOnce()
+        await menuWait { f.coreModel.channels.contains("native:startup-connect") && f.store.busy == nil }
+        let payload = #"""
+        {"automatic":true,"connectivity":{"state":"running","source":"automatic","staleResult":true,"checkedAt":"2026-10-29T00:00:00Z","result":{"connectivity":{"domesticOk":true,"foreignOk":true,"latency":{"domesticMs":15,"foreignMs":23}}}},"websites":{"state":"running","source":"automatic","staleResult":true,"checkedAt":"2026-10-29T00:00:00Z","result":{"proxyName":"fixture-node","results":[{"id":"google","label":"Google","url":"https://example.test","delay":20,"ok":true}]}}}
+        """#
+        f.core.onEvent?("diagnostics:updated", try JSONDecoder().decode(JSONValue.self, from: Data(payload.utf8)))
+        f.store.checkConnectivity(); f.store.testWebsites()
+        await Task.yield()
+        XCTAssertTrue(f.store.diagnostics?.connectivity.stale == true)
+        XCTAssertTrue(f.store.diagnostics?.websites.stale == true)
+        XCTAssertNotNil(f.store.connectivity)
+        XCTAssertEqual(f.store.websites?.results.count, 1)
+        XCTAssertNil(f.store.busy)
+        XCTAssertTrue(f.store.canDisconnect)
+        XCTAssertFalse(f.coreModel.channels.contains("connectivity:check"))
+        XCTAssertFalse(f.coreModel.channels.contains("connectivity:test-website-speeds"))
+    }
+
     func testFailedZeroAndRestrictedResponseHaveDistinctLabels() throws {
         let zero = try JSONDecoder().decode(VPNNode.self, from: Data(#"{"name":"fixture","type":"http","selected":false,"available":false,"delay":0,"latencyStatus":"timeout"}"#.utf8))
         XCTAssertEqual(zero.latencyText, "超时")

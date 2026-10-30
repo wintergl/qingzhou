@@ -69,7 +69,7 @@ enum PacketTunnelCoreFactory {
 
 final class TunnelDataPlane {
     private let packetFlow: NEPacketTunnelFlow
-    private let config: GeneratedTunnelConfig?
+    private var config: GeneratedTunnelConfig?
     private let selectedProxy: String
     private let store: AppGroupStore
     private let core: PacketTunnelCore
@@ -101,8 +101,19 @@ final class TunnelDataPlane {
         try core.start(options: makeStartOptions())
     }
 
+    var desiredMTU: Int { store.readGeneratedConfig()?.packetTunnelMTU ?? store.readSettings().packetTunnelMTU }
+    var configurationRevision: String? { config?.runtimeRevision }
+
     func restart() throws {
-        try core.restart(options: makeStartOptions())
+        let previous = config
+        config = store.readGeneratedConfig() ?? config
+        do { try core.restart(options: makeStartOptions()) }
+        catch {
+            config = previous
+            // A rejected candidate must not silently become the active profile.
+            try? core.restart(options: makeStartOptions())
+            throw error
+        }
     }
 
     func updatePower(sleeping: Bool, lowPower: Bool) {
@@ -117,14 +128,13 @@ final class TunnelDataPlane {
             throw TunnelDataPlaneError.missingSingBoxConfig
         }
 
-        let configURL = store.url("generated/sing-box.json")
-        try singBoxJSON.write(to: configURL, atomically: true, encoding: .utf8)
+        let configURL = try store.saveActiveTunnelConfig(singBoxJSON)
 
         return PacketTunnelCoreStartOptions(
             packetFlow: packetFlow,
             configPath: configURL,
             workingDirectory: store.url("runtime"),
-            selectedProxy: selectedProxy,
+            selectedProxy: config.selectedProxy,
             diagnosticsSettings: diagnosticsSettings,
             onTrafficUpdate: onTrafficUpdate,
             onLogMessage: onLogMessage

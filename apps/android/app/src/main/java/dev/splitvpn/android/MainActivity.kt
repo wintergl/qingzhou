@@ -6,12 +6,15 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.Configuration
+import android.content.res.ColorStateList
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
+import android.graphics.drawable.RippleDrawable
 import android.net.VpnService
 import android.net.Uri
 import android.os.Build
@@ -51,6 +54,7 @@ import dev.splitvpn.android.core.SplitVpnPaths
 import dev.splitvpn.android.core.SubscriptionClient
 import dev.splitvpn.android.core.SubscriptionRepository
 import dev.splitvpn.android.core.TrafficSnapshot
+import dev.splitvpn.android.ui.ManagementPages
 import java.io.File
 import java.text.DateFormat
 import java.time.Instant
@@ -74,6 +78,7 @@ class MainActivity : Activity() {
     private lateinit var runtimeStatusRepository: RuntimeStatusRepository
     private lateinit var subscriptionClient: SubscriptionClient
     private lateinit var configGenerator: MihomoConfigGenerator
+    private lateinit var managementPages: ManagementPages
 
     private lateinit var topBar: LinearLayout
     private lateinit var statusPill: TextView
@@ -92,6 +97,8 @@ class MainActivity : Activity() {
     private var lastRiskResult: RiskResult? = null
     private var lastRenderedRuntimeKey = ""
     private var lastNetworkEpoch = -1L
+    private var automaticDiagnosticEpoch = -1L
+    private lateinit var mobileDiagnostics: dev.splitvpn.android.core.MobileDiagnostics
     private var visible = false
     private val runtimeRefreshRunnable = Runnable {
         if (visible && runtimeStatusKey(runtimeStatusRepository.get()) != lastRenderedRuntimeKey) refresh()
@@ -109,8 +116,11 @@ class MainActivity : Activity() {
         settingsRepository = SettingsRepository(this)
         runtimeStatusRepository = RuntimeStatusRepository(this)
         val core = CoreClient(paths)
+        mobileDiagnostics = dev.splitvpn.android.core.MobileDiagnostics(core, runtimeStatusRepository)
         subscriptionClient = SubscriptionClient(paths, core, subscriptionRepository)
         configGenerator = MihomoConfigGenerator(core, settingsRepository)
+        managementPages = ManagementPages(this, core, settingsRepository, subscriptionClient,
+            execute = { label, work -> runTask(label, task = work) }, changed = { refresh() }, apply = { applyConfig() }, startVpn = { requestVpnPermissionAndStart() })
 
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 33)
@@ -118,6 +128,7 @@ class MainActivity : Activity() {
 
         layoutEdgeToEdge()
         setContentView(createShell())
+        window.decorView.post { applySystemBarsAppearance() }
         refresh()
         // Opening the app can resume a connection Android has not yet recreated.
         // Permission revocation and a deliberate disconnect never silently reconnect.
@@ -132,7 +143,7 @@ class MainActivity : Activity() {
             runtimeStatusRepository.markStopped()
             refresh()
         }
-        runTask("同步订阅", announce = false) { subscriptionClient.sync() }
+        runTask("同步订阅", announce = false) { subscriptionClient.sync(); managementPages.reloadSync() }
         handleAutomationIntent(intent)
     }
 
@@ -149,11 +160,13 @@ class MainActivity : Activity() {
         if (::runtimeStatusRepository.isInitialized) {
             runtimeStatusRepository.observe(runtimeListener)
             refresh()
+            if (::managementPages.isInitialized) managementPages.updateDue()
         }
     }
 
     override fun onPause() {
         visible = false
+        if (::managementPages.isInitialized) managementPages.pauseMeasurements()
         SplitVpnService.setUiVisible(false)
         runtimeStatusRepository.unobserve(runtimeListener)
         mainHandler.removeCallbacks(runtimeRefreshRunnable)
@@ -170,7 +183,9 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Android API")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_PERMISSION_REQUEST && resultCode == RESULT_OK) startVpnService()
+        if (requestCode == VPN_PERMISSION_REQUEST) {
+            if (resultCode == RESULT_OK) startVpnService() else dev.splitvpn.android.core.MobileCompany.get(this).permissionDenied()
+        }
     }
 
     // region Shell
@@ -191,6 +206,18 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun applySystemBarsAppearance() {
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.setSystemBarsAppearance(
+                if (darkAppearance) 0 else android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
+                android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS)
+        } else if (darkAppearance) {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = window.decorView.systemUiVisibility and
+                View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR.inv() and View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR.inv()
+        }
+    }
+
     private fun createShell(): View {
         val shell = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -207,7 +234,7 @@ class MainActivity : Activity() {
             setPadding(dp(11), 0, 0, 0)
         }
         brand.addView(text(getString(R.string.app_name), 20, Typeface.BOLD, TEXT))
-        brand.addView(text("智能分流", 12, Typeface.NORMAL, SECONDARY))
+        brand.addView(text("让连接从容有序", 12, Typeface.NORMAL, SECONDARY))
         topBar.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
         statusPill = statusPillView("", SECONDARY)
         topBar.addView(statusPill, LinearLayout.LayoutParams(-2, -2))
@@ -224,7 +251,7 @@ class MainActivity : Activity() {
         notice.addView(text("✕", 15, Typeface.NORMAL, SECONDARY).apply {
             gravity = Gravity.CENTER
             setOnClickListener { setNotice("") }
-        }, LinearLayout.LayoutParams(dp(36), dp(32)))
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
         shell.addView(notice, LinearLayout.LayoutParams(-1, -2))
 
         scrollView = ScrollView(this).apply { setBackgroundColor(BG) }
@@ -232,7 +259,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(16), dp(18), dp(16), dp(20))
         }
-        scrollView.addView(content, LinearLayout.LayoutParams(-1, -2))
+        scrollView.addView(content, android.widget.FrameLayout.LayoutParams(if (resources.configuration.screenWidthDp > 720) dp(720) else -1, -2, Gravity.CENTER_HORIZONTAL))
         shell.addView(scrollView, LinearLayout.LayoutParams(-1, 0, 1f))
 
         shell.addView(divider())
@@ -269,6 +296,13 @@ class MainActivity : Activity() {
         }
         lastRenderedRuntimeKey = runtimeStatusKey(runtime)
         styleStatusPill(statusPill, runtimeStateText(runtime.state), runtimeStateColor(runtime.state))
+        if (visible && runtime.state == "connected" && runtime.configurationRevision.isNotEmpty() && automaticDiagnosticEpoch != runtime.networkEpoch) {
+            automaticDiagnosticEpoch = runtime.networkEpoch
+            runTask("自动连接与站点检测", announce = false) {
+                runCatching { lastConnectivityResult = mobileDiagnostics.connectivityModel(mobileDiagnostics.connectivity()) }
+                runCatching { lastSpeedResults = mobileDiagnostics.websiteModels(mobileDiagnostics.websites()) }
+            }
+        }
         renderTabs()
         content.removeAllViews()
         when (currentTab) {
@@ -282,6 +316,7 @@ class MainActivity : Activity() {
 
     private fun selectTab(tab: Tab) {
         currentTab = tab
+        managementPages.refresh()
         refresh()
         scrollView.scrollTo(0, 0)
     }
@@ -292,10 +327,13 @@ class MainActivity : Activity() {
             val active = tab == currentTab
             val item = text(tab.title, 13, if (active) Typeface.BOLD else Typeface.NORMAL, if (active) ACCENT else SECONDARY).apply {
                 gravity = Gravity.CENTER
-                background = rounded(if (active) SELECTION else SURFACE, 10)
+                background = RippleDrawable(ColorStateList.valueOf(withAlpha(ACCENT, 0.12f)), rounded(if (active) SELECTION else SURFACE, 12), rounded(Color.WHITE, 12))
+                isSelected = active
+                isFocusable = true
+                contentDescription = "${tab.title}${if (active) "，已选中" else ""}"
                 setOnClickListener { selectTab(tab) }
             }
-            tabRow.addView(item, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(dp(3), 0, dp(3), 0) })
+            tabRow.addView(item, LinearLayout.LayoutParams(0, actionHeight(), 1f).apply { setMargins(dp(3), 0, dp(3), 0) })
         }
     }
 
@@ -308,20 +346,22 @@ class MainActivity : Activity() {
         val running = isTunnelRunning(runtime)
         val record = subscriptionRepository.get()
 
-        val status = card()
+        val status = card(24).apply {
+            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(Color.rgb(0x2C, 0x52, 0x45), HERO)).apply { cornerRadius = dp(24).toFloat() }
+        }
+        status.addView(text("连接概览  ·  轻舟", 12, Typeface.NORMAL, HERO_MUTED).apply { letterSpacing = 0.12f; setPadding(0, 0, 0, dp(18)) })
         val head = horizontal().apply { gravity = Gravity.TOP }
         val titles = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-        titles.addView(text(runtimeHeadline(runtime.state), 28, Typeface.BOLD, TEXT))
-        val subtitleColor = if (runtime.state == RuntimeStatusRepository.STATE_ERROR || !readiness.canCaptureTraffic) DESTRUCTIVE else SECONDARY
+        titles.addView(text(runtimeHeadline(runtime.state), 30, Typeface.BOLD, HERO_TEXT))
+        val subtitleColor = if (runtime.state == RuntimeStatusRepository.STATE_ERROR || !readiness.canCaptureTraffic) Color.rgb(0xFF, 0xBC, 0xB5) else HERO_MUTED
         titles.addView(text(runtimeSubtitle(runtime, readiness), 14, Typeface.NORMAL, subtitleColor).apply {
             setPadding(0, dp(6), 0, 0)
         })
         head.addView(titles, LinearLayout.LayoutParams(0, -2, 1f))
-        head.addView(statusPillView(runtimeStateText(runtime.state), runtimeStateColor(runtime.state)))
         status.addView(head)
         val connect = when {
             running && runtime.alwaysOn -> button("系统 VPN 设置")
-            running -> button("断开 VPN", ButtonKind.Destructive)
+            running -> button("断开 VPN")
             else -> button("连接 VPN", ButtonKind.Prominent)
         }
         connect.apply {
@@ -349,8 +389,6 @@ class MainActivity : Activity() {
         )
         content.addView(summaries, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(12)) })
 
-        content.addView(fallbackCard())
-
         val actions = horizontal()
         actions.addView(button("切换节点").apply { setOnClickListener { selectTab(Tab.Nodes) } }, weighted(end = 8))
         actions.addView(button("更新订阅").apply {
@@ -362,6 +400,7 @@ class MainActivity : Activity() {
 
         content.addView(connectivityCard())
         content.addView(websiteCard(compact = true))
+        content.addView(fallbackCard())
 
         content.addView(text(
             "${if (record.url.isBlank()) 0 else 1} 订阅 · ${record.nodeCount} 节点 · ${settingsRepository.getVpnDomainRules().size} 分流规则",
@@ -369,167 +408,15 @@ class MainActivity : Activity() {
         ).apply { setPadding(dp(4), dp(2), 0, 0) })
     }
 
-    private fun renderSubscription() {
-        content.addView(pageHeader("订阅", "沿用已保存的订阅与节点，更新失败时保留上次可用内容"))
-        val record = subscriptionRepository.get()
+    private fun renderSubscription() { content.addView(managementPages.subscriptionPage()) }
 
-        val edit = card()
-        edit.addView(cardHeading("订阅链接"))
-        edit.addView(caption("支持 Clash / Mihomo YAML、URI 列表和 base64 URI 列表。"))
-        val input = input("https://example.com/sub", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI).apply {
-            setText(record.url)
-        }
-        edit.addView(input, LinearLayout.LayoutParams(-1, dp(48)))
-        val actions = horizontal()
-        actions.addView(button("保存").apply {
-            setOnClickListener {
-                runTask("保存订阅") {
-                    subscriptionClient.save(input.text.toString())
-                    applyConfig()
-                }
-            }
-        }, weighted(end = 8))
-        actions.addView(button("更新订阅", ButtonKind.Prominent).apply {
-            setOnClickListener { updateSubscription(input.text.toString()) }
-        }, weighted())
-        edit.addView(actions, fullWidth(top = 12, height = WRAP))
-        content.addView(edit)
+    private fun renderNodes() { content.addView(managementPages.nodesPage()) }
 
-        val status = card()
-        val head = horizontal()
-        head.addView(cardHeading("状态"), LinearLayout.LayoutParams(0, -2, 1f))
-        val statusColor = when (record.status) {
-            "ready" -> GREEN
-            "error" -> DESTRUCTIVE
-            else -> SECONDARY
-        }
-        head.addView(statusPillView(subscriptionStatusText(record.status), statusColor))
-        status.addView(head)
-        status.addView(resultRow("节点数", record.nodeCount.takeIf { it > 0 }?.toString() ?: "—"))
-        status.addView(resultRow("上次更新", formatInstant(record.updatedAt)))
-        if (record.lastError.isNotBlank()) {
-            status.addView(text(record.lastError, 13, Typeface.NORMAL, DESTRUCTIVE).apply { setPadding(0, dp(12), 0, 0) })
-        }
-        content.addView(status)
-    }
-
-    private fun renderNodes() {
-        val selectedProxy = settingsRepository.getSelectedProxy()
-        content.addView(pageHeader("节点", "当前出口：$selectedProxy"))
-
-        val strategy = card()
-        strategy.addView(cardHeading("策略出口"))
-        strategy.addView(caption("选择后保存为当前出口；连接中会立即切换。"))
-        strategy.addView(segmented(listOf("AUTO" to "自动", "BALANCE" to "均衡", "DIRECT" to "直连"), selectedProxy) {
-            selectNode(it)
-        })
-        content.addView(strategy)
-
-        val nodes = subscriptionRepository.nodes()
-        val list = card()
-        val head = horizontal()
-        head.addView(cardHeading("订阅节点"), LinearLayout.LayoutParams(0, -2, 1f))
-        head.addView(text("${nodes.size} 个", 13, Typeface.NORMAL, SECONDARY))
-        list.addView(head)
-        if (nodes.isEmpty()) {
-            list.addView(empty("还没有节点，请先在订阅页更新订阅。"))
-            content.addView(list)
-            return
-        }
-        val search = input("搜索节点或协议", InputType.TYPE_CLASS_TEXT).apply { setText(nodeQuery) }
-        list.addView(search, fullWidth(top = 12))
-        val rows = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(8), 0, 0)
-        }
-        list.addView(rows)
-        fun renderRows() {
-            rows.removeAllViews()
-            val query = nodeQuery.trim()
-            val matched = nodes.filter {
-                query.isEmpty() || it.name.contains(query, ignoreCase = true) || it.type.contains(query, ignoreCase = true)
-            }
-            matched.take(NODE_LIMIT).forEach { rows.addView(nodeRow(it, it.name == selectedProxy)) }
-            when {
-                matched.isEmpty() -> rows.addView(empty("没有匹配的节点。"))
-                matched.size > NODE_LIMIT -> rows.addView(empty("已显示前 $NODE_LIMIT 个，共 ${matched.size} 个，可搜索缩小范围。"))
-            }
-        }
-        search.addTextChangedListener(object : TextWatcher {
-            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
-            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
-            override fun afterTextChanged(s: Editable?) {
-                nodeQuery = s?.toString().orEmpty()
-                renderRows()
-            }
-        })
-        renderRows()
-        content.addView(list)
-    }
-
-    private fun renderRouting() {
-        content.addView(pageHeader("分流规则", "保留原来的 VPN 列表，指定域名继续使用外网代理"))
-        content.addView(fallbackCard())
-
-        val rules = settingsRepository.getVpnDomainRules()
-        val list = card()
-        val head = horizontal()
-        head.addView(cardHeading("VPN 列表"), LinearLayout.LayoutParams(0, -2, 1f))
-        head.addView(text("${rules.size} 条", 13, Typeface.NORMAL, SECONDARY))
-        list.addView(head)
-        val create = horizontal()
-        val ruleInput = input("openai.com 或 DOMAIN-SUFFIX,openai.com", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
-        create.addView(ruleInput, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(8), 0) })
-        create.addView(button("添加").apply {
-            setOnClickListener {
-                if (ruleInput.text.isBlank()) return@setOnClickListener
-                settingsRepository.addVpnRule(ruleInput.text.toString())
-                runTask("添加规则") { applyConfig() }
-            }
-        }, LinearLayout.LayoutParams(-2, dp(44)))
-        list.addView(create, fullWidth(top = 12, height = WRAP))
-        if (rules.isEmpty()) list.addView(empty("VPN 列表为空，只按内置规则与兜底策略分流。"))
-        val rows = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(0, dp(8), 0, 0)
-        }
-        rules.forEach { rule ->
-            val row = listRow()
-            row.addView(text(rule, 14, Typeface.NORMAL, TEXT).apply {
-                maxLines = 2
-                ellipsize = TextUtils.TruncateAt.END
-            }, LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(linkText("删除", DESTRUCTIVE) {
-                settingsRepository.deleteVpnRule(rule)
-                runTask("删除规则") { applyConfig() }
-            })
-            rows.addView(row)
-        }
-        list.addView(rows)
-        content.addView(list)
-
-        val builtIn = card()
-        builtIn.addView(cardHeading("内置规则"))
-        builtIn.addView(caption("VPN 列表前后的固定规则，顺序与桌面版一致。"))
-        (DefaultRules.builtInPreVpnRules + DefaultRules.builtInGeoRules).forEach { item ->
-            val row = listRow()
-            val labels = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-            labels.addView(text(item.label, 14, Typeface.NORMAL, TEXT))
-            labels.addView(text(item.rule, 11, Typeface.NORMAL, SECONDARY).apply {
-                typeface = Typeface.MONOSPACE
-                setPadding(0, dp(2), 0, 0)
-            })
-            row.addView(labels, LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(text(item.policy, 13, Typeface.BOLD, if (item.policy == "VPN") ACCENT else SECONDARY).apply {
-                setPadding(dp(12), 0, 0, 0)
-            })
-            builtIn.addView(row)
-        }
-        content.addView(builtIn)
-    }
+    private fun renderRouting() { content.addView(managementPages.routingPage()) }
 
     private fun renderDiagnostics() {
         content.addView(pageHeader("诊断与风险", "连通性、站点表现和风险各自保留真实检测结果"))
+        content.addView(managementPages.toolsCard())
         content.addView(backgroundCard())
         content.addView(connectivityCard())
         content.addView(websiteCard(compact = false))
@@ -587,9 +474,11 @@ class MainActivity : Activity() {
 
     private fun connectivityCard(): View {
         val panel = card()
-        panel.addView(cardHeader("连接检测") { runTask("连接检测") { lastConnectivityResult = Diagnostics.runConnectivityCheck() } })
+        panel.addView(cardHeader("连接检测") { runTask("连接检测") { lastConnectivityResult = mobileDiagnostics.connectivityModel(mobileDiagnostics.connectivity()) } })
         val result = lastConnectivityResult
         panel.addView(resultRow("国内网络", result?.let { checkText(it.domesticOk, it.latency.domesticMs) } ?: "尚未检测"))
+        panel.addView(resultRow("应用 DNS", result?.systemDnsOk?.let { if (it) "正常" else "失败" } ?: "尚未检测"))
+        panel.addView(resultRow("ChatGPT HTTP", result?.chatgptStatus ?: "尚未检测"))
         panel.addView(resultRow("国外网络", result?.let { checkText(it.foreignOk, it.latency.foreignMs) } ?: "尚未检测"))
         panel.addView(resultRow("出口 IP", result?.externalIp?.takeIf { it.isNotBlank() } ?: lastRiskResult?.externalIp ?: "尚未读取"))
         panel.addView(resultRow("出口风险", lastRiskResult?.riskLevel ?: "尚未检测"))
@@ -599,7 +488,7 @@ class MainActivity : Activity() {
 
     private fun websiteCard(compact: Boolean): View {
         val panel = card()
-        panel.addView(cardHeader("站点测速") { runTask("站点测速") { lastSpeedResults = Diagnostics.runSpeedTest() } })
+        panel.addView(cardHeader("站点测速") { runTask("站点测速") { lastSpeedResults = mobileDiagnostics.websiteModels(mobileDiagnostics.websites()) } })
         val results = lastSpeedResults
         if (results == null) {
             panel.addView(text("Google · ChatGPT · Claude", 15, Typeface.BOLD, TEXT).apply { setPadding(0, dp(12), 0, 0) })
@@ -635,25 +524,21 @@ class MainActivity : Activity() {
     private fun riskCard(): View {
         val panel = card()
         panel.addView(cardHeader("出口风险") {
-            runTask("风险检测") { lastRiskResult = Diagnostics.runRiskCheck(settingsRepository) }
+            runTask("风险检测") { lastRiskResult = mobileDiagnostics.riskModel(mobileDiagnostics.risk(settingsRepository)) }
         })
         val keyInput = input("ipdata API Key", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).apply {
-            setText(settingsRepository.getIpdataApiKey())
+            hint = "输入新密钥，保存后加密存储"
         }
         val keyRow = horizontal()
-        keyRow.addView(keyInput, LinearLayout.LayoutParams(0, dp(44), 1f).apply { setMargins(0, 0, dp(8), 0) })
+        keyRow.addView(keyInput, LinearLayout.LayoutParams(0, actionHeight(), 1f).apply { setMargins(0, 0, dp(8), 0) })
         keyRow.addView(button("保存").apply {
             setOnClickListener {
-                settingsRepository.setIpdataApiKey(keyInput.text.toString())
-                setNotice("ipdata API Key 已保存。")
+                val key = keyInput.text.toString()
+                runTask("保存风险密钥") { settingsRepository.setIpdataApiKey(key) }
             }
         }, LinearLayout.LayoutParams(-2, dp(44)))
         panel.addView(keyRow, fullWidth(top = 12, height = WRAP))
-        panel.addView(text("高风险出口", 14, Typeface.NORMAL, SECONDARY).apply { setPadding(0, dp(14), 0, dp(8)) })
-        panel.addView(segmented(listOf("off" to "仅提示", "on" to "阻断"), if (settingsRepository.getBlockHighRisk()) "on" else "off") {
-            settingsRepository.setBlockHighRisk(it == "on")
-            refresh()
-        })
+        panel.addView(footnote("风险结果用于提示；切换线路后重新检测实际出口。"))
         lastRiskResult?.let { result ->
             panel.addView(resultRow("风险等级", result.riskLevel))
             panel.addView(resultRow("检测节点", result.proxyName))
@@ -748,7 +633,8 @@ class MainActivity : Activity() {
         }
         runTask("准备连接") {
             val record = subscriptionRepository.get()
-            require(record.status == "ready" && record.nodeCount > 0) { "订阅尚未可用，请先更新订阅。" }
+            val privateOnly = dev.splitvpn.android.core.MobileCompany.get(this).metadata().optBoolean("enabled") || dev.splitvpn.android.core.MobileCompany.connectionRequested()
+            require(record.status == "ready" && record.nodeCount > 0 || privateOnly) { "请先更新个人订阅，或在私有网络页完成 aTrust 认证。" }
             val config = configGenerator.generate()
             require(config.selectionValid) { config.selectionError }
             mainHandler.post {
@@ -956,7 +842,7 @@ class MainActivity : Activity() {
     private fun card(padding: Int = 18): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.VERTICAL
         setPadding(dp(padding), dp(padding), dp(padding), dp(padding))
-        background = rounded(SURFACE, 16, BORDER)
+        background = rounded(SURFACE, 18, BORDER)
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, dp(12)) }
     }
 
@@ -980,14 +866,15 @@ class MainActivity : Activity() {
             textSize = 14f
             setPadding(dp(14), 0, dp(14), 0)
             setOnClickListener { onClick() }
-        }, LinearLayout.LayoutParams(-2, dp(36)))
+        }, LinearLayout.LayoutParams(-2, actionHeight()))
         return row
     }
 
     private fun summaryCard(title: String, value: String, note: String): View = card(16).apply {
         addView(text(title, 13, Typeface.NORMAL, SECONDARY))
         addView(text(value, 17, Typeface.BOLD, TEXT).apply {
-            maxLines = 1
+            maxLines = 2
+            minHeight = dp(50)
             ellipsize = TextUtils.TruncateAt.END
             setPadding(0, dp(7), 0, dp(5))
         })
@@ -1047,11 +934,13 @@ class MainActivity : Activity() {
         }
         options.forEachIndexed { index, (value, label) ->
             val active = value == selected
-            group.addView(text(label, 15, Typeface.BOLD, if (active) Color.WHITE else SECONDARY).apply {
+            group.addView(text(label, 15, Typeface.BOLD, if (active) ACCENT else SECONDARY).apply {
                 gravity = Gravity.CENTER
-                if (active) background = rounded(TEXT, 10)
+                if (active) background = rounded(SELECTION, 10)
+                isSelected = active
+                isFocusable = true
                 setOnClickListener { onSelect(value) }
-            }, LinearLayout.LayoutParams(0, dp(42), 1f).apply {
+            }, LinearLayout.LayoutParams(0, actionHeight(), 1f).apply {
                 if (index > 0) setMargins(dp(4), 0, 0, 0)
             })
         }
@@ -1082,12 +971,20 @@ class MainActivity : Activity() {
     private fun button(label: String, kind: ButtonKind = ButtonKind.Normal): TextView =
         text(label, 15, Typeface.BOLD, if (kind == ButtonKind.Normal) TEXT else Color.WHITE).apply {
             gravity = Gravity.CENTER
-            maxLines = 1
-            setPadding(dp(16), 0, dp(16), 0)
-            background = when (kind) {
-                ButtonKind.Normal -> rounded(SURFACE, 10, BORDER)
-                ButtonKind.Prominent -> rounded(ACCENT, 10)
-                ButtonKind.Destructive -> rounded(DESTRUCTIVE, 10)
+            maxLines = 2
+            minHeight = dp(48)
+            setPadding(dp(12), 0, dp(16), 0)
+            val fill = when (kind) {
+                ButtonKind.Normal -> rounded(SURFACE, 13, BORDER)
+                ButtonKind.Prominent -> rounded(BUTTON_ACCENT, 13)
+                ButtonKind.Destructive -> rounded(Color.rgb(0xAC, 0x41, 0x48), 13)
+            }
+            background = RippleDrawable(ColorStateList.valueOf(withAlpha(ACCENT, 0.14f)), fill, rounded(Color.WHITE, 13))
+            accessibilityDelegate = object : View.AccessibilityDelegate() {
+                override fun onInitializeAccessibilityNodeInfo(host: View, info: android.view.accessibility.AccessibilityNodeInfo) {
+                    super.onInitializeAccessibilityNodeInfo(host, info)
+                    info.className = "android.widget.Button"
+                }
             }
             isClickable = true
             isFocusable = true
@@ -1150,12 +1047,14 @@ class MainActivity : Activity() {
     private fun withAlpha(color: Int, alpha: Float): Int =
         Color.argb((alpha * 255).toInt(), Color.red(color), Color.green(color), Color.blue(color))
 
-    private fun weighted(end: Int = 0): LinearLayout.LayoutParams = LinearLayout.LayoutParams(0, dp(44), 1f).apply {
+    private fun weighted(end: Int = 0): LinearLayout.LayoutParams = LinearLayout.LayoutParams(0, actionHeight(), 1f).apply {
         setMargins(0, 0, dp(end), 0)
     }
 
-    private fun fullWidth(top: Int = 0, height: Int = 44): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(-1, if (height == WRAP) -2 else dp(height)).apply { setMargins(0, dp(top), 0, 0) }
+    private fun fullWidth(top: Int = 0, height: Int = 48): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(-1, if (height == WRAP) -2 else if (height == 48) actionHeight() else dp(height)).apply { setMargins(0, dp(top), 0, 0) }
+
+    private fun actionHeight(): Int = dp(maxOf(48, (36 * resources.configuration.fontScale).toInt()))
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
@@ -1171,6 +1070,24 @@ class MainActivity : Activity() {
         Diagnostics("诊断")
     }
 
+    // Shared visual roles; read the current system appearance without changing preferences.
+    private val darkAppearance: Boolean get() = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
+    private fun themed(light: Int, dark: Int): Int = (if (darkAppearance) dark else light) or (0xFF shl 24)
+    private val BG get() = themed(0xF5F5F2, 0x121B1D)
+    private val SURFACE get() = themed(0xFFFFFF, 0x1B272A)
+    private val TEXT get() = themed(0x203632, 0xE9F1ED)
+    private val SECONDARY get() = themed(0x61736F, 0xA5B8B2)
+    private val BORDER get() = themed(0xE1E7E2, 0x324440)
+    private val SELECTION get() = themed(0xE1ECE5, 0x29443C)
+    private val ACCENT get() = themed(0x216650, 0x97DABB)
+    private val BUTTON_ACCENT get() = themed(0x216650, 0x276D53)
+    private val DESTRUCTIVE get() = themed(0xAC4148, 0xF29AA0)
+    private val GREEN get() = themed(0x24785C, 0x87D9AE)
+    private val SEGMENT_BG get() = themed(0xEAEFEA, 0x22332D)
+    private val HERO = Color.rgb(0x14, 0x38, 0x2E)
+    private val HERO_TEXT = Color.rgb(0xF0, 0xF7, 0xE8)
+    private val HERO_MUTED = Color.rgb(0xAB, 0xCC, 0xBA)
+
     companion object {
         const val ACTION_AUTOMATION_START = "dev.splitvpn.android.AUTOMATION_START"
         const val ACTION_AUTOMATION_STOP = "dev.splitvpn.android.AUTOMATION_STOP"
@@ -1178,17 +1095,5 @@ class MainActivity : Activity() {
         private const val NODE_LIMIT = 200
         private const val LOG_LINES = 60
         private const val WRAP = -1
-
-        // apps/macos-native VPNTheme (light).
-        private val BG = Color.rgb(0xF5, 0xF7, 0xFB)
-        private const val SURFACE = Color.WHITE
-        private val TEXT = Color.rgb(0x20, 0x2B, 0x40)
-        private val SECONDARY = Color.rgb(0x69, 0x76, 0x8C)
-        private val BORDER = Color.rgb(0xE1, 0xE7, 0xF0)
-        private val SELECTION = Color.rgb(0xEA, 0xF0, 0xFA)
-        private val ACCENT = Color.rgb(0x35, 0x5D, 0xAD)
-        private val DESTRUCTIVE = Color.rgb(0xB7, 0x38, 0x3E)
-        private val GREEN = Color.rgb(0x20, 0x84, 0x63)
-        private val SEGMENT_BG = Color.rgb(0xF0, 0xF3, 0xF8)
     }
 }

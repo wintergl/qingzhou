@@ -21,7 +21,10 @@ func TestTLSRejectsUnconfirmedOrChangedCertificateBeforeSendingHTTP(t *testing.T
 	}))
 	defer server.Close()
 	pin := sha256.Sum256(server.Certificate().Raw)
-	for _, test := range []struct { name, value string; allowed bool }{
+	for _, test := range []struct {
+		name, value string
+		allowed     bool
+	}{
 		{"missing", "", false},
 		{"changed", strings.Repeat("00", 32), false},
 		{"confirmed", hex.EncodeToString(pin[:]), true},
@@ -34,22 +37,45 @@ func TestTLSRejectsUnconfirmedOrChangedCertificateBeforeSendingHTTP(t *testing.T
 			before := requests.Load()
 			response, err := client.Get(server.URL)
 			if test.allowed {
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 				response.Body.Close()
-				if requests.Load() != before+1 { t.Fatal("confirmed channel did not reach handler") }
+				if requests.Load() != before+1 {
+					t.Fatal("confirmed channel did not reach handler")
+				}
 			} else {
-				if err == nil { response.Body.Close(); t.Fatal("unexpected unverified request") }
-				if requests.Load() != before { t.Fatal("HTTP was sent before certificate was verified") }
+				if err == nil {
+					response.Body.Close()
+					t.Fatal("unexpected unverified request")
+				}
+				if requests.Load() != before {
+					t.Fatal("HTTP was sent before certificate was verified")
+				}
 			}
 		})
 	}
 }
 
 func TestConfirmedPinStillRejectsExpiredCertificate(t *testing.T) {
-	cert := &x509.Certificate{Raw: []byte("fixture"), NotBefore: time.Now().Add(-2*time.Hour), NotAfter: time.Now().Add(-time.Hour)}
+	cert := &x509.Certificate{Raw: []byte("fixture"), NotBefore: time.Now().Add(-2 * time.Hour), NotAfter: time.Now().Add(-time.Hour)}
 	pin := sha256.Sum256(cert.Raw)
 	t.Setenv("SPLITVPN_ATRUST_CERT_SHA256", hex.EncodeToString(pin[:]))
 	if err := VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}); err == nil {
 		t.Fatal("expired certificate was accepted")
+	}
+}
+
+func TestSessionPinsDoNotReadAnotherSessionsEnvironment(t *testing.T) {
+	cert := &x509.Certificate{Raw: []byte("session-a"), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+	pin := sha256.Sum256(cert.Raw)
+	verify := ForFingerprint(hex.EncodeToString(pin[:]))
+	t.Setenv("SPLITVPN_ATRUST_CERT_SHA256", strings.Repeat("00", 32))
+	if err := verify(tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}); err != nil {
+		t.Fatal(err)
+	}
+	other := ForFingerprint(strings.Repeat("00", 32))
+	if other(tls.ConnectionState{PeerCertificates: []*x509.Certificate{cert}}) == nil {
+		t.Fatal("session pin leaked")
 	}
 }

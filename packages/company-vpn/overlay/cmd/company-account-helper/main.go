@@ -274,13 +274,13 @@ func (b *bridge) run(c command) {
 		b.emit(event{Type: "error", Stage: "login", Message: "请先检测入口并确认网关证书。"})
 		return
 	}
-	_ = os.Setenv("SPLITVPN_ATRUST_CERT_SHA256", c.Fingerprint)
 	device := make([]byte, 16)
 	if _, err := rand.Read(device); err != nil {
 		b.emit(event{Type: "error", Stage: "login", Message: "无法生成本次测试的设备标识。"})
 		return
 	}
 	s := auth.NewSession(u.Host, nil)
+	s.SetCertificatePin(c.Fingerprint)
 	b.loginSecrets = []string{c.Password}
 	defer func() { b.loginSecrets = nil }()
 	b.emit(event{Type: "progress", Stage: "login", Message: "正在认证接入账号…"})

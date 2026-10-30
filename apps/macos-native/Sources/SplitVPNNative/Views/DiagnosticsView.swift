@@ -22,6 +22,13 @@ struct DiagnosticsView: View {
                     if store.riskBatchRunning { Button("取消") { store.cancelRiskBatch() } }
                     Spacer(); Text("\(store.risks.count) 条保留记录").foregroundStyle(.secondary)
                 }
+                if let risk = store.currentRisk {
+                    Text("当前实际出口 · \(risk.ip ?? "未取得 IP") · \(risk.label) · \(dateText(risk.checkedAt))")
+                        .font(.system(size: 12)).foregroundStyle(VPNTheme.secondary).textSelection(.enabled)
+                } else {
+                    Text("当前出口风险待检测；下方保留的是机场节点风险记录。")
+                        .font(.system(size: 12)).foregroundStyle(VPNTheme.secondary)
+                }
                 if let progress = store.riskProgress {
                     VStack(alignment: .leading, spacing: 6) {
                         ProgressView(value: Double(progress.checked), total: Double(max(1, progress.total)))
@@ -37,7 +44,7 @@ struct DiagnosticsView: View {
                     TableColumn("检测时间") { item in Text(dateText(item.checkedAt)).font(.system(size: 11)).lineLimit(2).help(dateText(item.checkedAt)) }.width(125)
                     TableColumn("说明") { item in Text(item.error ?? item.reasons.joined(separator: "、")).lineLimit(2) }
                 }.tableCard()
-                Text("全量检测覆盖所有订阅节点，会暂时逐个切换外网出口，结束或取消后恢复原出口；已有连接保留。需要已配置的 ipdata 密钥。")
+                Text("全量检测通过独立入口逐个检测机场节点；当前实际出口单独检测，两类记录分别保留。需要已配置的 ipdata 密钥。")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("配置风险密钥") { riskKey = ""; store.riskKeyMessage = nil; showingRiskKey = true }.disabled(!store.canMutate || store.riskBatchRunning)

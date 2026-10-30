@@ -17,6 +17,7 @@ final class NodesLayoutStabilityTests: XCTestCase {
         var release: CheckedContinuation<Void, Never>?
         f.coreModel.intercept = { channel, _ in
             if channel == "native:bootstrap" { return bootstrap }
+            if channel == "nodes:list", case .object(let fields) = bootstrap { return fields["nodes"] }
             if channel == "nodes:test-recommended" {
                 await withCheckedContinuation { release = $0 }
                 return .object([:])

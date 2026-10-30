@@ -15,8 +15,8 @@ SELECTION = {
     'macos-arm64': ['mihomo', 'zju_connect', 'meta_rules'],
     'macos-x64': ['mihomo', 'zju_connect', 'meta_rules'],
     'windows-x64': ['mihomo', 'zju_connect', 'meta_rules'],
-    'android-arm64': ['mihomo_android', 'tun2socks', 'meta_rules'],
-    'ios': ['sing_box', 'sing_geosite', 'sing_geoip'],
+    'android-arm64': ['mihomo_android', 'tun2socks', 'zju_connect', 'meta_rules'],
+    'ios': ['sing_box', 'zju_connect', 'sing_geosite', 'sing_geoip'],
 }
 
 
@@ -156,15 +156,13 @@ def rust_notices(output, platform):
 
 
 def go_notices(output, platform):
-    if platform == 'android-arm64':
-        # These two different Go toolchains are handled by the Android preparer.
-        return {'prepared_by': 'apps/android/scripts/prepare-dependencies.py'}
     lock = load_lock()
-    if platform == 'ios':
-        sources = [('sing_box', ROOT / 'apps/iphone/ThirdParty/sing-box-src',
-                    dict(os.environ, GOPATH=str(ROOT / '.local/ios-go'),
-                         GOMODCACHE=str(ROOT / '.local/ios-go/pkg/mod'),
-                         GOTOOLCHAIN='go' + lock['dependencies']['sing_box']['go_version'], GOWORK='off'))]
+    if platform in {'ios', 'android-arm64'}:
+        mobile_environment = dict(os.environ, GOTOOLCHAIN='go' + lock['dependencies']['zju_connect']['go_version'], GOWORK='off', GOMODCACHE=str(ROOT / 'packages/company-vpn/.local/go-modules'))
+        sources = [('zju_connect', ROOT / 'packages/company-vpn/.local/mobile/company-source', mobile_environment)]
+        if platform == 'ios':
+            sources += [('sing_box', ROOT / 'packages/company-vpn/.local/mobile/libbox-source',
+                    mobile_environment)]
     else:
         sources = [(key, source, environment) for key, source, environment in [
             ('mihomo', LOCAL / 'sources' / ('mihomo-' + lock['dependencies']['mihomo']['commit']),
@@ -186,7 +184,7 @@ def go_notices(output, platform):
         decoder = json.JSONDecoder()
         modules = []
         included_modules = None
-        if platform != 'ios':
+        if platform not in {'ios', 'android-arm64'}:
             architecture = 'arm64' if platform == 'macos-arm64' else 'amd64'
             binary = (ROOT / 'resources/mihomo' / {
                 'macos-arm64': 'darwin-arm64/mihomo', 'macos-x64': 'darwin-x64/mihomo',

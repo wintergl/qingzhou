@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use splitvpn_core::{
     Core, Events, Jobs,
-    runtime::{prepare_network_request, start_batch},
+    runtime::{prepare_network_request, start_batch, start_chain_scan},
     storage::redact,
 };
 use std::{
@@ -92,6 +92,9 @@ fn run() -> Result<()> {
             if matches!(
                 channel,
                 "subscription:update"
+                    | "static-exit:test"
+                    | "chain-scan:connect"
+                    | "chain-scan:use"
                     | "connectivity:check"
                     | "connectivity:test-website-speeds"
                     | "nodes:test"
@@ -121,7 +124,9 @@ fn run() -> Result<()> {
                 }
                 continue;
             }
-            let result = if let Some(kind) = channel
+            let result = if channel == "chain-scan:start" {
+                start_chain_scan(worker_core.clone(), payload)
+            } else if let Some(kind) = channel
                 .strip_prefix("nodes:start-")
                 .and_then(|s| s.strip_suffix("-batch"))
                 .filter(|s| matches!(*s, "risk" | "speed" | "udp"))
@@ -167,7 +172,8 @@ fn run() -> Result<()> {
         let mut delay = Duration::from_secs(1);
         let mut update: Option<std::thread::JoinHandle<()>> = None;
         let mut sample_task: Option<std::thread::JoinHandle<()>> = None;
-        let mut diagnostic_task: Option<std::thread::JoinHandle<()>> = None;
+        let mut failover_task: Option<std::thread::JoinHandle<()>> = None;
+        let mut diagnostic_tasks: Vec<std::thread::JoinHandle<()>> = Vec::new();
         while !tick_jobs.shutdown.load(Ordering::SeqCst) {
             tick_jobs.wait_background(delay);
             if tick_jobs.shutdown.load(Ordering::SeqCst) {
@@ -179,17 +185,36 @@ fn run() -> Result<()> {
             if sample_task.as_ref().is_some_and(|t| t.is_finished()) {
                 let _ = sample_task.take().unwrap().join();
             }
-            if diagnostic_task.as_ref().is_some_and(|t| t.is_finished()) {
-                let _ = diagnostic_task.take().unwrap().join();
+            if failover_task.as_ref().is_some_and(|t| t.is_finished()) {
+                let _ = failover_task.take().unwrap().join();
             }
-            let mut diagnostic = None;
+            let mut i = 0;
+            while i < diagnostic_tasks.len() {
+                if diagnostic_tasks[i].is_finished() {
+                    let _ = diagnostic_tasks.swap_remove(i).join();
+                } else {
+                    i += 1;
+                }
+            }
+            let mut diagnostics = Vec::new();
             let mut sample = None;
+            let mut chain_automatic = None;
+            let mut chain_failover = None;
             let due = match tick_core.try_lock() {
                 Ok(mut c) => {
                     c.tick();
+                    if failover_task.is_none() {
+                        chain_failover = c.take_chain_failover_request();
+                    }
+                    chain_automatic = c.take_chain_automatic_request();
                     c.publish_read_views();
-                    if diagnostic_task.is_none() {
-                        diagnostic = c.take_due_diagnostic();
+                    // Both read-only checks start after connection readiness;
+                    // a slow connectivity target must not hold up website results.
+                    while diagnostic_tasks.len() + diagnostics.len() < 2 {
+                        let Some(plan) = c.take_due_diagnostic() else {
+                            break;
+                        };
+                        diagnostics.push(plan);
                     }
                     if sample_task.is_none() {
                         sample = c.take_background_sample();
@@ -206,10 +231,28 @@ fn run() -> Result<()> {
                     None
                 }
             };
-            if let Some(plan) = diagnostic {
+            if let Some(plan) = chain_failover {
+                let failover_core = tick_core.clone();
+                let failover_jobs = tick_jobs.clone();
+                failover_task = Some(std::thread::spawn(move || {
+                    let _ = plan.run(&failover_core);
+                    failover_jobs.wake_background();
+                }));
+            }
+            if let Some(request) = chain_automatic {
+                // Revalidates enable/pause state under the core lock before starting.
+                if start_chain_scan(tick_core.clone(), request).is_err() {
+                    if let Ok(mut c) = tick_core.lock() {
+                        c.chain_auto_error = true;
+                    }
+                }
+            }
+            for plan in diagnostics {
                 let diagnostic_core = tick_core.clone();
-                diagnostic_task = Some(std::thread::spawn(move || {
+                let diagnostic_jobs = tick_jobs.clone();
+                diagnostic_tasks.push(std::thread::spawn(move || {
                     let _ = plan.run(&diagnostic_core);
+                    diagnostic_jobs.wake_background();
                 }));
             }
             if let Some(sample) = sample {
@@ -280,13 +323,14 @@ fn run() -> Result<()> {
             );
             continue;
         };
-        if let Some(value) = jobs
-            .read_views
-            .lock()
-            .ok()
-            .and_then(|cache| cache.get(channel).cloned())
-        {
-            reply(&out, request["id"].clone(), Ok(value));
+        if let Some(result) = jobs.cached_read(channel) {
+            reply(&out, request["id"].clone(), result);
+            continue;
+        }
+        if channel == "chain-scan:use-state" || channel == "chain-scan:cancel-use" {
+            let payload = request.get("payload").cloned().unwrap_or_else(|| json!({}));
+            let result = jobs.chain_use_request(channel, &payload);
+            reply(&out, request["id"].clone(), result);
             continue;
         }
         if channel == "vpn:stop" {
@@ -300,7 +344,9 @@ fn run() -> Result<()> {
                 | "nodes:select-v2"
                 | "native:network-changed"
                 | "network:repair"
-        ) {
+        ) || channel == "native:runtime-environment"
+            && request["payload"]["sleeping"] == true
+        {
             jobs.invalidate_diagnostics();
         }
         if let Some(kind) = channel
@@ -321,7 +367,7 @@ fn run() -> Result<()> {
                 | "native:company-remove"
                 | "network:repair"
         ) {
-            jobs.cancel_all();
+            jobs.cancel_diagnostics();
         }
         match queue.push(request) {
             Ok(cancelled) => {

@@ -11,18 +11,22 @@ enum AppBrand {
 
 /// iOS 版轻舟配色，与 macOS 版 `VPNTheme` 保持一致。
 enum VPNTheme {
-    static let background = adaptive(light: 0xF5F7FB, dark: 0x151923)
-    static let surface = adaptive(light: 0xFFFFFF, dark: 0x202633)
-    static let text = adaptive(light: 0x202B40, dark: 0xEBEFF7)
-    static let secondary = adaptive(light: 0x69768C, dark: 0xA1AEC2)
-    static let border = adaptive(light: 0xE1E7F0, dark: 0x343E50)
-    static let selection = adaptive(light: 0xEAF0FA, dark: 0x2D3A52)
-    static let accent = adaptive(light: 0x355DAD, dark: 0x8FAEF2)
-    static let buttonAccent = adaptive(light: 0x355DAD, dark: 0x456CC0)
-    static let destructive = adaptive(light: 0xB7383E, dark: 0xF08F95)
-    static let destructiveFill = adaptive(light: 0xB7383E, dark: 0xB84148)
-    static let green = adaptive(light: 0x208463, dark: 0x7AD5B2)
-    static let warning = adaptive(light: 0xB7791F, dark: 0xF2C46D)
+    static let background = adaptive(light: 0xF5F5F2, dark: 0x121B1D)
+    static let surface = adaptive(light: 0xFFFFFF, dark: 0x1B272A)
+    static let text = adaptive(light: 0x203632, dark: 0xE9F1ED)
+    static let secondary = adaptive(light: 0x61736F, dark: 0xA5B8B2)
+    static let border = adaptive(light: 0xE1E7E2, dark: 0x324440)
+    static let selection = adaptive(light: 0xE1ECE5, dark: 0x29443C)
+    static let accent = adaptive(light: 0x216650, dark: 0x97DABB)
+    static let buttonAccent = adaptive(light: 0x216650, dark: 0x276D53)
+    static let destructive = adaptive(light: 0xAC4148, dark: 0xF29AA0)
+    static let destructiveFill = adaptive(light: 0xAC4148, dark: 0xA74148)
+    static let green = adaptive(light: 0x24785C, dark: 0x87D9AE)
+    static let warning = adaptive(light: 0xA65B12, dark: 0xF0B36D)
+
+    static let heroInk = Color(red: 0.08, green: 0.22, blue: 0.18)
+    static let heroText = Color(red: 0.94, green: 0.97, blue: 0.91)
+    static let heroMuted = Color(red: 0.67, green: 0.80, blue: 0.73)
 
     private static func adaptive(light: UInt32, dark: UInt32) -> Color {
         #if canImport(UIKit)
@@ -56,33 +60,39 @@ struct VPNButtonStyle: ButtonStyle {
     var destructive = false
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 15, weight: .semibold))
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 17)
-            .frame(maxWidth: .infinity, minHeight: 44)
-            .background(fill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay {
-                if !prominent {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(VPNTheme.border, lineWidth: 1)
-                }
-            }
-            .opacity(configuration.isPressed ? 0.75 : 1)
+        MobileButtonSurface(label: configuration.label, prominent: prominent,
+                            destructive: destructive || configuration.role == .destructive, pressed: configuration.isPressed)
     }
+}
 
-    private var foreground: Color {
-        if prominent {
-            return .white
-        }
-        return destructive ? VPNTheme.destructive : VPNTheme.accent
+private struct MobileButtonSurface<Label: View>: View {
+    let label: Label
+    let prominent: Bool
+    let destructive: Bool
+    let pressed: Bool
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private var fill: Color { prominent ? (destructive ? VPNTheme.destructiveFill : VPNTheme.buttonAccent) : VPNTheme.surface }
+    var body: some View {
+        label.font(.body.weight(.semibold))
+            .foregroundStyle(prominent ? Color.white : destructive ? VPNTheme.destructive : VPNTheme.accent)
+            .padding(.horizontal, 17).padding(.vertical, 12)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(fill, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).strokeBorder(prominent ? .clear : VPNTheme.border))
+            .opacity(enabled ? (pressed ? 0.8 : 1) : 0.45)
+            .scaleEffect(pressed && !reduceMotion ? 0.985 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: pressed)
     }
+}
 
-    private var fill: Color {
-        if prominent {
-            return destructive ? VPNTheme.destructiveFill : VPNTheme.buttonAccent
-        }
-        return VPNTheme.surface
+func subscriptionStatusTitle(_ status: String) -> String {
+    switch status {
+    case "ready": return "可用"
+    case "error": return "更新失败"
+    case "updating": return "更新中"
+    case "saved": return "待更新"
+    default: return "未配置"
     }
 }
 
@@ -139,11 +149,11 @@ struct VPNCard<Content: View>: View {
         VStack(alignment: .leading, spacing: 12) {
             content
         }
-        .padding(16)
+        .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(VPNTheme.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(VPNTheme.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(VPNTheme.border, lineWidth: 1)
         )
     }

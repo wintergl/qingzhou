@@ -38,12 +38,13 @@ public sealed class MainWindow : Window
         FontSize = 14;
         UseLayoutRounding = true;
         TextOptions.SetTextFormattingMode(this, TextFormattingMode.Display);
-        SetResourceReference(BackgroundProperty, "ApplicationBackgroundBrush");
+        SetResourceReference(BackgroundProperty, "BrandBackground");
 
         pages["总览"] = new OverviewPage(store);
         pages["私有网络"] = new CompanyPage(store, company);
         pages["订阅"] = new SubscriptionsPage(store);
         pages["节点"] = new NodesPage(store);
+        pages["ISP 线路"] = new ChainPage(store);
         pages["节点组"] = new GroupsPage(store);
         pages["分流规则"] = new RoutingPage(store);
         pages["诊断与风险"] = new DiagnosticsPage(store);
@@ -56,7 +57,7 @@ public sealed class MainWindow : Window
         dismiss.MinHeight = 24;
 
         var root = new Grid();
-        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(232) });
+        root.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(218) });
         root.ColumnDefinitions.Add(new ColumnDefinition());
         var sidebar = Sidebar();
         root.Children.Add(sidebar);
@@ -99,16 +100,23 @@ public sealed class MainWindow : Window
 
         var icon = new Image { Width = 40, Height = 40, Margin = new Thickness(0, 0, 12, 0) };
         try { icon.Source = new BitmapImage(new Uri("pack://application:,,,/Assets/qingzhou.png")); } catch { }
-        var brand = Ui.Row(icon, Ui.Stack(2, Ui.Text("轻舟", 20, bold: true), Ui.Text("智能分流", 12, secondary: true)));
+        var brand = Ui.Row(icon, Ui.Stack(2, Ui.Text("轻舟", 20, bold: true), Ui.Text("让连接从容有序", 12, secondary: true)));
         brand.Margin = new Thickness(20, 22, 20, 18);
         grid.Children.Add(brand);
 
         Section("VPN");
-        foreach (var name in new[] { "总览", "私有网络", "订阅", "节点", "节点组", "分流规则" }) Item(name);
+        foreach (var name in new[] { "总览", "私有网络", "订阅", "节点", "ISP 线路", "节点组", "分流规则" }) Item(name);
         Section("监控");
         foreach (var name in new[] { "诊断与风险", "流量", "日志" }) Item(name);
         Section("应用");
         Item("设置");
+        var navStyle = new Style(typeof(ListBoxItem));
+        navStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(12, 8, 12, 8)));
+        navStyle.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
+        var selected = new Trigger { Property = ListBoxItem.IsSelectedProperty, Value = true };
+        selected.Setters.Add(new Setter(Control.BackgroundProperty, new DynamicResourceExtension("BrandSelection")));
+        navStyle.Triggers.Add(selected);
+        nav.ItemContainerStyle = navStyle;
         nav.Margin = new Thickness(10, 0, 10, 0);
         nav.SelectionChanged += (_, _) =>
         {
@@ -138,8 +146,8 @@ public sealed class MainWindow : Window
         var dock = new DockPanel { LastChildFill = true };
         DockPanel.SetDock(count, Dock.Right);
         dock.Children.Add(count);
-        dock.Children.Add(Ui.Text(name, 15));
-        var item = new ListBoxItem { Content = dock, Tag = name, MinHeight = 38, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        dock.Children.Add(Ui.Text(name, 14));
+        var item = new ListBoxItem { Content = dock, Tag = name, MinHeight = 40, HorizontalContentAlignment = HorizontalAlignment.Stretch };
         nav.Items.Add(item);
         navItems[name] = item;
         counts[name] = count;

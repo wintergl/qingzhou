@@ -89,3 +89,5 @@ Mihomo / tun2socks 异常退出通过阻塞等待通知服务，随后关闭旧 
 安装测试 APK 后建议依次验证：连接后退到后台和划走界面；Wi-Fi 与移动网络互切；飞行模式后恢复网络；锁屏 30 分钟后联网；恢复中手动断开；开启省电模式；系统强行停止后重新打开。内核异常可在测试设备上单独终止子进程验证，不能用“强行停止应用”代替。
 
 Android VPN 授权、前台服务、TUN fd、真实切网、厂商后台限制及实际耗电需要设备验收；构建通过不代表这些已验证。系统行为参考 [Android VPN 指南](https://developer.android.com/develop/connectivity/vpn) 与 [Doze / App Standby](https://developer.android.com/training/monitoring-device-state/doze-standby)。第三方组件与公开发布事项见 [第三方依赖说明](../../docs/THIRD_PARTY.md)。
+
+移动 aTrust SDK 须先运行 `python3 packages/company-vpn/prepare_mobile.py` 和 `python3 packages/company-vpn/build_mobile.py android --skip-prepare`，再执行 Rust 与 Gradle 构建。接入、挑战认证、会话交接及测试方式见 [移动接入说明](../../packages/company-vpn/mobile/README.md)。

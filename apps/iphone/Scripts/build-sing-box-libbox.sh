@@ -38,6 +38,7 @@ if ! git -C "${SRC_DIR}" cat-file -e "${COMMIT}^{commit}" 2>/dev/null; then
 fi
 git -C "${SRC_DIR}" checkout --detach "${COMMIT}"
 [[ "$(git -C "${SRC_DIR}" rev-parse HEAD)" == "${COMMIT}" ]]
+if [[ "${1:-}" == "--source-only" ]]; then exit 0; fi
 # Upstream FindMobile reads GOPATH/bin, so install both tools into a project-local
 # GOPATH. Go's public module checksums remain enforced through go.sum.
 export GOPATH="${REPO_DIR}/.local/ios-go"

@@ -31,7 +31,7 @@
     "sing_box": {
       "repository": "https://github.com/SagerNet/sing-box.git",
       "commit": "320146a106f9baaa57f5e0153675a613940ef91c",
-      "gomobile_version": "v0.1.13",
+      "gomobile_version": "v0.1.12",
       "license": "GPL-3.0-or-later",
       "license_file": "third_party/licenses/sing_box.LICENSE",
       "license_sha256": "650d5e3b99a446fb38e820fa87a49562e0c79eab868fff58618ac487a58e554c",

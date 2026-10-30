@@ -1,8 +1,10 @@
 import AppKit
+import IOKit.ps
 
 struct DesktopActivity: Equatable {
     var visible = false
     var lowPower = false
+    var onBattery: Bool? = nil
     var sleeping = false
 
     func pollingInterval(statusKnown: Bool, running: Bool) -> Duration? {
@@ -10,6 +12,12 @@ struct DesktopActivity: Equatable {
         if !statusKnown { return .seconds(visible ? 5 : 30) }
         guard visible, running else { return nil }
         return .seconds(lowPower ? 5 : 2)
+    }
+
+    func chainPollingInterval(running: Bool) -> Duration? {
+        guard visible, !sleeping else { return nil }
+        let conserving = lowPower || onBattery != false
+        return .seconds(running ? (conserving ? 2 : 1) : (conserving ? 30 : 15))
     }
 }
 
@@ -22,15 +30,27 @@ final class NativeActivityService {
     private let center: NotificationCenter
     private let workspace: NotificationCenter
     private let readState: () -> (visible: Bool, lowPower: Bool)
+    private let readPower: () -> Bool?
+    private var powerSource: CFRunLoopSource?
 
     init(center: NotificationCenter = .default,
          workspace: NotificationCenter = NSWorkspace.shared.notificationCenter,
-         readState: (() -> (visible: Bool, lowPower: Bool))? = nil) {
+         readState: (() -> (visible: Bool, lowPower: Bool))? = nil,
+         readPower: (() -> Bool?)? = nil) {
         self.center = center; self.workspace = workspace
         self.readState = readState ?? {
             (NSApp?.isHidden != true && (NSApp?.windows.contains {
                 $0.isVisible && !$0.isMiniaturized && $0.canBecomeKey && $0.occlusionState.contains(.visible)
             } ?? false), ProcessInfo.processInfo.isLowPowerModeEnabled)
+        }
+        self.readPower = readPower ?? {
+            guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+                  let source = IOPSGetProvidingPowerSourceType(info)?.takeUnretainedValue() else { return nil }
+            switch source as String {
+            case kIOPSACPowerValue: return false
+            case kIOPSBatteryPowerValue: return true
+            default: return nil
+            }
         }
     }
 
@@ -48,6 +68,12 @@ final class NativeActivityService {
         observe(workspace, NSWorkspace.didWakeNotification) { [weak self] in
             self?.activity.sleeping = false; self?.refresh(force: true)
         }
+        powerSource = IOPSNotificationCreateRunLoopSource({ context in
+            guard let context else { return }
+            let service = Unmanaged<NativeActivityService>.fromOpaque(context).takeUnretainedValue()
+            Task { @MainActor in service.refresh() }
+        }, Unmanaged.passUnretained(self).toOpaque())?.takeRetainedValue()
+        if let powerSource { CFRunLoopAddSource(CFRunLoopGetMain(), powerSource, .defaultMode) }
         refresh(force: true)
     }
     private func observe(_ center: NotificationCenter, _ name: Notification.Name, action: @escaping @MainActor () -> Void) {
@@ -58,11 +84,13 @@ final class NativeActivityService {
     private func refresh(force: Bool = false) {
         var next = activity
         let state = readState()
-        next.lowPower = state.lowPower; next.visible = state.visible
+        next.lowPower = state.lowPower; next.visible = state.visible; next.onBattery = readPower()
         // Sleep was set by the workspace callback, so always deliver that event.
         if force || next != activity { activity = next; onChange?(next) }
     }
     func stop() {
+        if let powerSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), powerSource, .defaultMode) }
+        powerSource = nil
         for (center, observer) in observers { center.removeObserver(observer) }
         observers.removeAll(); onChange = nil
     }

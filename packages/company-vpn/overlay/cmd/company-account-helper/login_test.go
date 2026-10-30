@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+ "github.com/mythologyli/zju-connect/internal/companyprocess"
 )
 
 // This local server exercises the real Session.Login implementation, including
@@ -29,7 +30,7 @@ func TestAccountLoginThenGrantedResources(t *testing.T) {
 	paths := []string{}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
-		if r.URL.Query().Get("platform") != "Mac" {
+		if r.URL.Query().Get("platform") != companyprocess.AuthPlatform() {
 			t.Error("incorrect platform")
 		}
 		switch r.URL.Path {

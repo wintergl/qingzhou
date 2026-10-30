@@ -244,6 +244,12 @@ fn parse_ss(line: &str) -> Result<Value> {
 pub fn enabled_providers(store: &Storage) -> Result<Vec<(Value, Value, Vec<Value>)>> {
     let record = store.subscription()?;
     let manifest = store.manifest()?;
+    enabled_providers_from(&record, &manifest)
+}
+fn enabled_providers_from(
+    record: &Value,
+    manifest: &Value,
+) -> Result<Vec<(Value, Value, Vec<Value>)>> {
     let mut out = Vec::new();
     for e in record["entries"]
         .as_array()
@@ -348,8 +354,44 @@ pub fn udp_capability(n: &Value) -> (Option<bool>, bool) {
     (udp, explicit_udp.is_some())
 }
 pub fn provider_nodes(store: &Storage) -> Result<Vec<Value>> {
+    type Catalog = (Vec<u8>, Vec<Value>);
+    static CATALOGS: LazyLock<Mutex<HashMap<std::path::PathBuf, Catalog>>> =
+        LazyLock::new(Default::default);
+    let record = store.subscription()?;
+    let manifest = store.manifest()?;
+    let mut files = Vec::new();
+    for entry in manifest["entries"].as_array().context("订阅列表不可用。")? {
+        if !record["entries"].as_array().is_some_and(|items| {
+            items.iter().any(|item| {
+                item["id"] == entry["subscriptionId"]
+                    && item["enabled"] == true
+                    && item["nodeCount"].as_u64().unwrap_or(0) > 0
+            })
+        }) {
+            continue;
+        }
+        let path = entry["providerPath"]
+            .as_str()
+            .context("订阅 provider 路径无效。")?;
+        let meta = fs::metadata(path)?;
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|time| time.as_nanos().to_string());
+        files.push(json!([path, meta.len(), modified]));
+    }
+    let inputs = serde_json::to_vec(&json!([record, manifest, files]))?;
+    if let Some(nodes) = CATALOGS.lock().ok().and_then(|cache| {
+        cache
+            .get(&store.root)
+            .filter(|(key, _)| key == &inputs)
+            .map(|(_, nodes)| nodes.clone())
+    }) {
+        return Ok(nodes);
+    }
     let mut out = Vec::new();
-    for (e, p, nodes) in enabled_providers(store)? {
+    for (e, p, nodes) in enabled_providers_from(&record, &manifest)? {
         let id = e["id"].as_str().unwrap();
         for n in nodes {
             let name = n["name"].as_str().unwrap().to_owned();
@@ -376,13 +418,22 @@ pub fn provider_nodes(store: &Storage) -> Result<Vec<Value>> {
                     "BALANCE",
                     "THROUGHPUT",
                     "WECHAT",
-                    "PROBE"
+                    "PROBE",
+                    crate::static_exit::EXIT,
+                    crate::static_exit::SCAN_EXIT,
+                    crate::static_exit::SCAN_FRONT
                 ]
                 .contains(&name)
                 || name.starts_with("COMPANY-")
                 || name.starts_with("SG_")
                 || name.starts_with("SGN_")
         );
+    }
+    if let Ok(mut cache) = CATALOGS.lock() {
+        if !cache.contains_key(&store.root) && cache.len() >= 8 {
+            cache.clear();
+        }
+        cache.insert(store.root.clone(), (inputs, out.clone()));
     }
     Ok(out)
 }

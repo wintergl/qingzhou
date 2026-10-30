@@ -76,6 +76,9 @@ def main():
                 if pattern.search(line):
                     findings.append({'file': name, 'line': line_no, 'kind': kind})
             for match in EMAIL.finditer(line):
+                if (path.suffix == ".kt" and match[0].startswith("this@")
+                        and match.start() > 0 and line[match.start()-1] in "( "):
+                    continue
                 # Retain verified third-party copyright attributions verbatim.
                 if verified_license:
                     continue

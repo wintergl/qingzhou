@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../../Qingzhou/Store.cs" Link="Store.cs" />
+    <Compile Include="../../Qingzhou/ChainFeatures.cs" Link="ChainFeatures.cs" />
     <Compile Include="../../Qingzhou/RuntimeEnvironment.cs" Link="RuntimeEnvironment.cs" />
     <Compile Include="../../Qingzhou/WindowLifetime.cs" Link="WindowLifetime.cs" />
     <Compile Include="../../Qingzhou/TrayPresentation.cs" Link="TrayPresentation.cs" />

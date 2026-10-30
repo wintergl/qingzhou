@@ -9,6 +9,7 @@ import (
     "net/http"
     "net/url"
     "strconv"
+	"runtime"
     "strings"
     "sync"
     "sync/atomic"
@@ -56,13 +57,16 @@ func validatedTarget(raw string) (*url.URL, error) {
 }
 
 func startCompanyTunnel(session *auth.Session, origin *url.URL, username, device, interfaceName string, resources []byte) (*companyTunnel, error) {
+    return startCompanyTunnelContext(context.Background(),session,origin,username,device,interfaceName,resources)
+}
+func startCompanyTunnelContext(ctx context.Context, session *auth.Session, origin *url.URL, username, device, interfaceName string, resources []byte) (*companyTunnel, error) {
     snapshot, err := session.Snapshot()
     if err != nil { return nil, err }
-    dialer, err := underlay.New(underlay.Options{InterfaceName: interfaceName, AutoDetect: interfaceName == ""})
+    dialer, err := underlay.New(underlay.Options{InterfaceName: interfaceName, AutoDetect: interfaceName == "" && runtime.GOOS != "android"})
     if err != nil { return nil, err }
     t := &companyTunnel{underlay: dialer}
-    t.client = atrust.NewClient(atrust.ClientOptions{UnderlayDialer: dialer,
-        Session: atrust.SessionOptions{Username: username, SID: snapshot.SID, DeviceID: device}})
+    t.client = atrust.NewClient(atrust.ClientOptions{UnderlayDialer: dialer, Context:ctx,
+        Session: atrust.SessionOptions{Username: username, SID: snapshot.SID, DeviceID: device, Fingerprint: session.CertificatePin()}})
     clientData, _ := json.Marshal(auth.ClientAuthData{DeviceID: device, Cookies: snapshot.Cookies})
     port := 443
     if origin.Port() != "" { port, err = strconv.Atoi(origin.Port()); if err != nil { t.close(); return nil, err } }
